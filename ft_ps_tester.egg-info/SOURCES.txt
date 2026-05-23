@@ -2,6 +2,7 @@ LICENSE
 README.md
 pyproject.toml
 ft_ps_tester/__init__.py
+ft_ps_tester/__main__.py
 ft_ps_tester/cli.py
 ft_ps_tester.egg-info/PKG-INFO
 ft_ps_tester.egg-info/SOURCES.txt

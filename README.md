@@ -28,17 +28,48 @@ A Python-based tester for the **42 push_swap** project. It generates controlled 
 
 ## Installation
 
+> **Tip:** If you run into installation errors, try updating `pip` first:
+> ```bash
+> pip install --upgrade pip
+> # or
+> pip3 install --upgrade pip
+> ```
+
 ### Option 1: Install from PyPI (recommended)
+
+Using `pip`:
 
 ```bash
 pip install ft_ps_tester
 ```
 
-Then run from anywhere inside your **push_swap** project:
+Using `pip3`:
 
 ```bash
-ft_ps_tester ./push_swap
+pip3 install ft_ps_tester
 ```
+
+User-local install (no sudo required — `pip`):
+
+```bash
+pip install --user ft_ps_tester
+```
+
+User-local install (no sudo required — `pip3`):
+
+```bash
+pip3 install --user ft_ps_tester
+```
+
+Using `python3 -m pip`:
+
+```bash
+python3 -m pip install ft_ps_tester
+```
+
+> **Note:** When using `--user`, the `ft_ps_tester` binary is installed to a user-local `bin/` directory (e.g. `~/.local/bin` on Linux/macOS, or `%APPDATA%\Python\Python3x\Scripts` on Windows). Make sure this directory is on your `PATH`, or use the `python3 -m` execution methods shown below.
+
+---
 
 ### Option 2: Install from source
 
@@ -49,17 +80,83 @@ git clone https://github.com/italoalmeida0/ft_ps_tester.git
 cd ft_ps_tester
 ```
 
-Install in editable / development mode:
+Editable / development mode (`pip`):
 
 ```bash
 pip install -e .
 ```
 
-Or install normally:
+Editable / development mode (`pip3`):
+
+```bash
+pip3 install -e .
+```
+
+Editable / development mode (`python3 -m pip`):
+
+```bash
+python3 -m pip install -e .
+```
+
+Normal install (`pip`):
 
 ```bash
 pip install .
 ```
+
+Normal install (`pip3`):
+
+```bash
+pip3 install .
+```
+
+Normal install (`python3 -m pip`):
+
+```bash
+python3 -m pip install .
+```
+
+User-local install from source (`pip --user`):
+
+```bash
+pip install --user -e .
+```
+
+User-local install from source (`pip3 --user`):
+
+```bash
+pip3 install --user -e .
+```
+
+---
+
+### Option 3: Run with `pipx` (isolated, no install required)
+
+If you have [`pipx`](https://pypa.github.io/pipx/) installed, you can run the tester directly without permanently installing it:
+
+```bash
+pipx run ft_ps_tester ./push_swap
+```
+
+Single test run:
+
+```bash
+pipx run ft_ps_tester ./push_swap 500 complex
+```
+
+Or install it into an isolated environment:
+
+```bash
+pipx install ft_ps_tester
+```
+
+Then run normally:
+
+```bash
+ft_ps_tester ./push_swap
+```
+
+---
 
 Make sure your `push_swap` binary is compiled and executable:
 
@@ -74,24 +171,70 @@ chmod +x push_swap
 
 ### Full test suite (recommended)
 
-Tests **100** and **500** elements across all four modes (100 tests each):
+Tests **100** and **500** elements across all four modes (100 tests each).
+
+If the `ft_ps_tester` command is on your `PATH`:
 
 ```bash
-python3 ft_ps_tester.py ./push_swap
+ft_ps_tester ./push_swap
 ```
+
+If the command is **not** found (common with `--user` installs), run via the module:
+
+```bash
+python3 -m ft_ps_tester ./push_swap
+```
+
+Or using the `.cli` submodule directly:
+
+```bash
+python3 -m ft_ps_tester.cli ./push_swap
+```
+
+Or using `python` directly:
+
+```bash
+python -m ft_ps_tester ./push_swap
+```
+
+From the cloned source directory (no install required):
+
+```bash
+python3 ft_ps_tester/cli.py ./push_swap
+```
+
+---
 
 ### Single test run
 
 Test a specific size and mode:
 
 ```bash
-python3 ft_ps_tester.py ./push_swap <size> <mode>
+ft_ps_tester ./push_swap <size> <mode>
+```
+
+If `ft_ps_tester` is not on your `PATH`:
+
+```bash
+python3 -m ft_ps_tester ./push_swap <size> <mode>
+```
+
+Or via the `.cli` submodule:
+
+```bash
+python3 -m ft_ps_tester.cli ./push_swap <size> <mode>
 ```
 
 Example:
 
 ```bash
-python3 ft_ps_tester.py ./push_swap 500 complex
+ft_ps_tester ./push_swap 500 complex
+```
+
+Or:
+
+```bash
+python3 -m ft_ps_tester ./push_swap 500 complex
 ```
 
 ---
