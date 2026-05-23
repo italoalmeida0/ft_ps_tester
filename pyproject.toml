@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ft_ps_tester"
+version = "1.0.0"
+description = "A Python tester for the 42 push_swap project with controlled disorder generation and performance grading."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.7"
+authors = [
+    {name = "ft_ps_tester contributors"}
+]
+keywords = ["42", "push_swap", "tester", "sorting", "algorithm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Education :: Testing",
+    "Topic :: Software Development :: Testing",
+]
+
+[project.scripts]
+ft_ps_tester = "ft_ps_tester.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/italoalmeida0/ft_ps_tester"
+Issues = "https://github.com/italoalmeida0/ft_ps_tester/issues"

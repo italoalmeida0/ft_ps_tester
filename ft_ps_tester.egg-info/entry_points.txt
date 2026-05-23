@@ -1,0 +1,2 @@
+[console_scripts]
+ft_ps_tester = ft_ps_tester.cli:main

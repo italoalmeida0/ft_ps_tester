@@ -1,0 +1,353 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+import random
+import subprocess
+from collections import deque
+
+# ==========================================
+# CONFIGURATION
+# ==========================================
+COLORS = {
+    "GREEN": "\033[1;32m",
+    "RED": "\033[1;31m",
+    "YELLOW": "\033[1;33m",
+    "BLUE": "\033[1;34m",
+    "CYAN": "\033[1;36m",
+    "MAGENTA": "\033[1;35m",
+    "RESET": "\033[0m",
+    "BOLD": "\033[1m"
+}
+
+THRESHOLDS = {
+    100: {"excellent": 700, "good": 1500, "pass": 2000},
+    500: {"excellent": 5500, "good": 8000, "pass": 12000}
+}
+
+MODES = {
+    "simple": (15.0, 19.9),
+    "medium": (20.0, 49.9),
+    "complex": (50.0, 55.0),
+    "adaptive": (15.0, 55.0)
+}
+
+# ==========================================
+# DATA GENERATOR
+# ==========================================
+def generate_sequence(size, target_disorder):
+    raw_sequence = random.sample(range(-1000000, 1000000), size)
+    raw_sequence.sort()
+
+    total_pairs = (size * (size - 1)) / 2.0
+    target_inv = int((target_disorder / 100.0) * total_pairs)
+
+    if target_inv > 0:
+        inv = [0] * size
+        indices = list(range(size))
+        random.shuffle(indices)
+        
+        remaining = target_inv
+        for i in indices:
+            max_cap = size - 1 - i
+            take = random.randint(0, min(remaining, max_cap))
+            inv[i] = take
+            remaining -= take
+            
+        if remaining > 0:
+            random.shuffle(indices)
+            for i in indices:
+                max_cap = size - 1 - i
+                space = max_cap - inv[i]
+                if space > 0:
+                    take = min(remaining, space)
+                    inv[i] += take
+                    remaining -= take
+                if remaining == 0:
+                    break
+
+        result_sequence = []
+        for i in range(size - 1, -1, -1):
+            val = raw_sequence[i]
+            insert_pos = inv[i]
+            result_sequence.insert(insert_pos, val)
+            
+        return result_sequence
+    
+    return raw_sequence
+
+# ==========================================
+# VALIDATOR (CHECKER)
+# ==========================================
+class PushSwapChecker:
+    def __init__(self, sequence):
+        self.stack_a = deque(sequence)
+        self.stack_b = deque()
+
+    def exec_op(self, op):
+        if op == "sa" and len(self.stack_a) >= 2:
+            self.stack_a[0], self.stack_a[1] = self.stack_a[1], self.stack_a[0]
+        elif op == "sb" and len(self.stack_b) >= 2:
+            self.stack_b[0], self.stack_b[1] = self.stack_b[1], self.stack_b[0]
+        elif op == "ss":
+            self.exec_op("sa")
+            self.exec_op("sb")
+        elif op == "pa" and len(self.stack_b) >= 1:
+            self.stack_a.appendleft(self.stack_b.popleft())
+        elif op == "pb" and len(self.stack_a) >= 1:
+            self.stack_b.appendleft(self.stack_a.popleft())
+        elif op == "ra" and len(self.stack_a) >= 2:
+            self.stack_a.append(self.stack_a.popleft())
+        elif op == "rb" and len(self.stack_b) >= 2:
+            self.stack_b.append(self.stack_b.popleft())
+        elif op == "rr":
+            self.exec_op("ra")
+            self.exec_op("rb")
+        elif op == "rra" and len(self.stack_a) >= 2:
+            self.stack_a.appendleft(self.stack_a.pop())
+        elif op == "rrb" and len(self.stack_b) >= 2:
+            self.stack_b.appendleft(self.stack_b.pop())
+        elif op == "rrr":
+            self.exec_op("rra")
+            self.exec_op("rrb")
+        else:
+            return False 
+        return True
+
+    def validate(self, ops_list):
+        for op in ops_list:
+            if not self.exec_op(op):
+                return False
+            
+        if len(self.stack_b) != 0:
+            return False
+            
+        lst = list(self.stack_a)
+        return all(lst[i] <= lst[i+1] for i in range(len(lst)-1))
+
+# ==========================================
+# TEST ENGINE
+# ==========================================
+def get_grade_info(size, ops):
+    if size not in THRESHOLDS:
+        return ("UNKNOWN", COLORS["CYAN"])
+        
+    t = THRESHOLDS[size]
+    if ops == 0:
+        return ("N/A", COLORS["RESET"])
+    elif ops < t["excellent"]:
+        return ("EXCELLENT", COLORS["GREEN"])
+    elif ops < t["good"]:
+        return ("GOOD", COLORS["BLUE"])
+    elif ops <= t["pass"]:
+        return ("PASS", COLORS["YELLOW"])
+    else:
+        return ("FAIL", COLORS["RED"])
+
+def format_grade_column(ops, grade_text, color):
+    visible_str = f"{ops} ({grade_text})"
+    padding = 18 - len(visible_str)
+    return f"{ops} ({color}{grade_text}{COLORS['RESET']}){' ' * padding}"
+
+def run_test_suite(executable, size, mode):
+    min_disorder, max_disorder = MODES[mode]
+    
+    print(f"{COLORS['CYAN']}>> Testing Size: {size} | Mode: {mode.upper()} {COLORS['RESET']}", end=" ")
+    
+    total_ops = 0
+    max_ops = 0
+    min_ops = float('inf')
+    
+    failures = []
+    
+    for i in range(1, 101):
+        disorder = random.uniform(min_disorder, max_disorder)
+        sequence = generate_sequence(size, disorder)
+        str_seq = [str(x) for x in sequence]
+        try:
+            result = subprocess.run(
+                [executable, f'--{mode}'] + str_seq,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10
+            )
+            
+            ops = result.stdout.strip().split('\n')
+            if ops == ['']:
+                ops = []
+                
+            op_count = len(ops)
+            checker = PushSwapChecker(sequence)
+            is_sorted = checker.validate(ops)
+            
+            if not is_sorted:
+                sys.stdout.write(f"{COLORS['RED']}!{COLORS['RESET']}")
+                failures.append({
+                    "size": size,
+                    "mode": mode,
+                    "disorder": disorder,
+                    "reason": "Failed to sort stack properly (or invalid operation).",
+                    "ops": op_count,
+                    "limit": THRESHOLDS[size]["pass"],
+                    "sequence": " ".join(str_seq)
+                })
+            else:
+                total_ops += op_count
+                max_ops = max(max_ops, op_count)
+                min_ops = min(min_ops, op_count)
+                
+                if op_count > THRESHOLDS[size]["pass"]:
+                    sys.stdout.write(f"{COLORS['RED']}F{COLORS['RESET']}")
+                    failures.append({
+                        "size": size,
+                        "mode": mode,
+                        "disorder": disorder,
+                        "reason": "Operation limit exceeded.",
+                        "ops": op_count,
+                        "limit": THRESHOLDS[size]["pass"],
+                        "sequence": " ".join(str_seq)
+                    })
+                else:
+                    sys.stdout.write(f"{COLORS['GREEN']}.{COLORS['RESET']}")
+                    
+        except subprocess.TimeoutExpired:
+            sys.stdout.write(f"{COLORS['MAGENTA']}T{COLORS['RESET']}")
+            failures.append({
+                "size": size,
+                "mode": mode,
+                "disorder": disorder,
+                "reason": "Timeout (infinite loop?).",
+                "ops": "N/A",
+                "limit": THRESHOLDS[size]["pass"],
+                "sequence": " ".join(str_seq)
+            })
+            
+        sys.stdout.flush()
+        
+    print()
+    
+    successful_runs = 100 - len(failures)
+    avg_ops = (total_ops // successful_runs) if successful_runs > 0 else 0
+    
+    return {
+        "size": size,
+        "mode": mode,
+        "max": max_ops,
+        "min": min_ops if min_ops != float('inf') else 0,
+        "avg": avg_ops,
+        "fails": len(failures)
+    }, failures
+
+def print_failures(failures):
+    if not failures:
+        return
+        
+    filtered_failures = []
+    seen_limits = {} 
+    
+    # Filter failures: max 1 timeout and 1 standard error per (size, mode)
+    for f in failures:
+        key = (f['size'], f['mode'])
+        if key not in seen_limits:
+            seen_limits[key] = {"timeout": False, "standard": False}
+            
+        is_timeout = "Timeout" in f['reason']
+        
+        if is_timeout and not seen_limits[key]["timeout"]:
+            filtered_failures.append(f)
+            seen_limits[key]["timeout"] = True
+        elif not is_timeout and not seen_limits[key]["standard"]:
+            filtered_failures.append(f)
+            seen_limits[key]["standard"] = True
+            
+    print("\n" + "="*80)
+    print(f"{COLORS['RED']}{COLORS['BOLD']}FAILURE REPORT {COLORS['RESET']}")
+    print("="*80)
+    
+    for idx, f in enumerate(filtered_failures):
+        print(f"\n{COLORS['YELLOW']}--- Failure {idx + 1} ---{COLORS['RESET']}")
+        print(f"Size       : {f['size']}")
+        print(f"Mode       : {f['mode'].upper()}")
+        print(f"Disorder   : {f['disorder']:.2f}%")
+        print(f"Reason     : {COLORS['RED']}{f['reason']}{COLORS['RESET']}")
+        print(f"Operations : {f['ops']} / Limit: {f['limit']}")
+        print("-" * 80)
+
+# ==========================================
+# MAIN ENTRY
+# ==========================================
+def main():
+    if len(sys.argv) < 2 or len(sys.argv) > 4:
+        print(f"Usage:")
+        print(f"  Full Test Suite : {sys.argv[0]} <path_to_push_swap>")
+        print(f"  Specific Test   : {sys.argv[0]} <path_to_push_swap> <size> <mode>")
+        sys.exit(1)
+        
+    executable = sys.argv[1]
+    if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
+        print(f"Error: '{executable}' not found or not executable.")
+        sys.exit(1)
+        
+    all_failures = []
+    results = []
+
+    if len(sys.argv) == 2:
+        print(f"{COLORS['BOLD']}Running FULL TEST SUITE for {executable}{COLORS['RESET']}\n")
+        sizes = [100, 500]
+        modes = ["simple", "medium", "complex", "adaptive"]
+        
+        for size in sizes:
+            for mode in modes:
+                stats, fails = run_test_suite(executable, size, mode)
+                results.append(stats)
+                all_failures.extend(fails)
+                
+    else:
+        try:
+            size = int(sys.argv[2])
+        except ValueError:
+            print("Error: Size must be an integer.")
+            sys.exit(1)
+            
+        mode = sys.argv[3].lower() if len(sys.argv) == 4 else "adaptive"
+        if mode not in MODES:
+            print(f"Error: Invalid mode. Choose from {list(MODES.keys())}")
+            sys.exit(1)
+            
+        print(f"{COLORS['BOLD']}Running SINGLE TEST SUITE for {executable}{COLORS['RESET']}\n")
+        stats, fails = run_test_suite(executable, size, mode)
+        results.append(stats)
+        all_failures.extend(fails)
+
+        # Print detailed failures if any exist
+    print_failures(all_failures)
+
+    # Print global summary
+    print("\n" + "="*88)
+    print(f"{COLORS['BOLD']}PERFORMANCE SUMMARY{COLORS['RESET']}")
+    print("="*88)
+    print(f"{'SIZE':<6} | {'MODE':<8} | {'MAX (GRADE)':<18} | {'MIN (GRADE)':<18} | {'AVG (GRADE)':<18} | {'FAILS'}")
+    print("-" * 88)
+    
+    for r in results:
+        # Get grade info (text and color)
+        max_text, max_color = get_grade_info(r['size'], r['max'])
+        min_text, min_color = get_grade_info(r['size'], r['min'])
+        avg_text, avg_color = get_grade_info(r['size'], r['avg'])
+        
+        # Format columns properly to align ignoring ansi color codes
+        col_max = format_grade_column(r['max'], max_text, max_color)
+        col_min = format_grade_column(r['min'], min_text, min_color)
+        col_avg = format_grade_column(r['avg'], avg_text, avg_color)
+        
+        fail_str = f"{COLORS['RED']}{r['fails']}{COLORS['RESET']}" if r['fails'] > 0 else f"{COLORS['GREEN']}0{COLORS['RESET']}"
+        
+        print(f"{r['size']:<6} | {r['mode'].upper():<8} | {col_max} | {col_min} | {col_avg} | {fail_str}")
+        
+    print("="*88)
+
+
+if __name__ == "__main__":
+    main()
+    

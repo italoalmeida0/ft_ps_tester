@@ -1,0 +1,178 @@
+Metadata-Version: 2.4
+Name: ft_ps_tester
+Version: 1.0.0
+Summary: A Python tester for the 42 push_swap project with controlled disorder generation and performance grading.
+Author: ft_ps_tester contributors
+License: MIT
+Project-URL: Homepage, https://github.com/italoalmeida0/ft_ps_tester
+Project-URL: Issues, https://github.com/italoalmeida0/ft_ps_tester/issues
+Keywords: 42,push_swap,tester,sorting,algorithm
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.7
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Education :: Testing
+Classifier: Topic :: Software Development :: Testing
+Requires-Python: >=3.7
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Dynamic: license-file
+
+# ft_ps_tester
+
+A Python-based tester for the **42 push_swap** project. It generates controlled random sequences with specific disorder levels, runs your `push_swap` executable, validates the output, and grades performance against 42 thresholds.
+
+---
+
+## Features
+
+- **Controlled disorder generation** — creates sequences with precise inversion percentages.
+- **Four test modes** — simple, medium, complex, and adaptive.
+- **Output validation** — simulates operations to verify sorting correctness.
+- **Performance grading** — compares operation counts against 42 thresholds (excellent / good / pass / fail).
+- **Failure report** — concise summary of timeouts, invalid operations, and limit exceedances.
+
+---
+
+## Requirements
+
+- Python 3
+- A compiled `push_swap` executable that accepts arguments and prints operations to `stdout`
+
+---
+
+## Installation
+
+### Option 1: Install from PyPI (recommended)
+
+```bash
+pip install ft_ps_tester
+```
+
+Then run from anywhere inside your **push_swap** project:
+
+```bash
+ft_ps_tester ./push_swap
+```
+
+### Option 2: Install from source
+
+Clone this repository:
+
+```bash
+git clone https://github.com/italoalmeida0/ft_ps_tester.git
+cd ft_ps_tester
+```
+
+Install in editable / development mode:
+
+```bash
+pip install -e .
+```
+
+Or install normally:
+
+```bash
+pip install .
+```
+
+Make sure your `push_swap` binary is compiled and executable:
+
+```bash
+make
+chmod +x push_swap
+```
+
+---
+
+## Usage
+
+### Full test suite (recommended)
+
+Tests **100** and **500** elements across all four modes (100 tests each):
+
+```bash
+python3 ft_ps_tester.py ./push_swap
+```
+
+### Single test run
+
+Test a specific size and mode:
+
+```bash
+python3 ft_ps_tester.py ./push_swap <size> <mode>
+```
+
+Example:
+
+```bash
+python3 ft_ps_tester.py ./push_swap 500 complex
+```
+
+---
+
+## Modes / Flags
+
+Your `push_swap` must support the following flags (passed as `--<mode>` before the numbers):
+
+| Mode      | Disorder range | Description                              |
+|-----------|----------------|------------------------------------------|
+| `simple`  | 15.0% – 19.9%  | Nearly sorted sequences                  |
+| `medium`  | 20.0% – 49.9%  | Moderately shuffled sequences            |
+| `complex` | 50.0% – 55.0%  | Heavily shuffled sequences               |
+| `adaptive`| 15.0% – 55.0%  | Random disorder across the full spectrum |
+
+> **Note:** If your `push_swap` does **not** implement these flags, the tester will still work if your program ignores unknown flags and simply sorts the provided numbers. However, for accurate mode-based testing, your `push_swap` should parse and use the flag to adjust its algorithm.
+
+---
+
+## Grading Thresholds
+
+| Size | Excellent | Good  | Pass  |
+|------|-----------|-------|-------|
+| 100  | < 700     | < 1500| ≤ 2000|
+| 500  | < 5500    | < 8000| ≤ 12000|
+
+Results are shown with color-coded grades:
+- **EXCELLENT** — green
+- **GOOD** — blue
+- **PASS** — yellow
+- **FAIL** — red
+
+---
+
+## Example Output
+
+```
+Running FULL TEST SUITE for ./push_swap
+
+>> Testing Size: 100 | Mode: SIMPLE  ..................................................
+>> Testing Size: 100 | Mode: MEDIUM  ..................................................
+>> Testing Size: 100 | Mode: COMPLEX ..................................................
+>> Testing Size: 100 | Mode: ADAPTIVE..................................................
+>> Testing Size: 500 | Mode: SIMPLE  ..................................................
+>> Testing Size: 500 | Mode: MEDIUM  ..................................................
+>> Testing Size: 500 | Mode: COMPLEX ..................................................
+>> Testing Size: 500 | Mode: ADAPTIVE..................................................
+
+========================================================================================
+PERFORMANCE SUMMARY
+========================================================================================
+SIZE   | MODE     | MAX (GRADE)        | MIN (GRADE)        | AVG (GRADE)        | FAILS
+----------------------------------------------------------------------------------------
+100    | SIMPLE   | 450 (EXCELLENT)    | 320 (EXCELLENT)    | 380 (EXCELLENT)    | 0
+100    | MEDIUM   | 1200 (GOOD)        | 900 (EXCELLENT)    | 1050 (GOOD)        | 0
+...
+```
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
