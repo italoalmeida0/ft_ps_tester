@@ -4,6 +4,11 @@ A Python-based tester for the **42 push_swap** project. It generates controlled 
 
 ---
 
+<img src="i1.jpeg" width="500">
+<img src="i2.jpeg" width="500">
+
+---
+
 ## Features
 
 - **Controlled disorder generation** — creates sequences with precise inversion percentages.
