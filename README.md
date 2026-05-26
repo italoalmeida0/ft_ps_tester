@@ -239,6 +239,47 @@ python3 -m ft_ps_tester ./push_swap 500 complex
 
 ---
 
+### Failure reports (`--reports`)
+
+Enable automatic report generation when a test fails (invalid sort, operation limit exceeded, or timeout). Reports are saved in the **same directory as the `push_swap` executable**.
+
+Two files are generated per failure:
+
+| File suffix | Content |
+|-------------|---------|
+| `_ops_N.txt`  | Raw output (operations) from `push_swap` |
+| `_nums_N.txt` | Input numbers passed to `push_swap` |
+
+The numbering (`_1`, `_2`, …) is shared between both files: if either an `_ops_N` or `_nums_N` file already exists, the next number is used so both files always share the same suffix.
+
+Example:
+
+```bash
+ft_ps_tester --reports ./push_swap
+```
+
+If a failure occurs in the `100_simple` test, the following files are created next to `./push_swap`:
+
+```
+report_100_simple_ops_1.txt
+report_100_simple_nums_1.txt
+```
+
+If another failure occurs later (or if one of those files already existed), the next pair becomes:
+
+```
+report_100_simple_ops_2.txt
+report_100_simple_nums_2.txt
+```
+
+You can also use `--reports` with single test runs:
+
+```bash
+ft_ps_tester --reports ./push_swap 500 complex
+```
+
+---
+
 ## Modes / Flags
 
 Your `push_swap` must support the following flags (passed as `--<mode>` before the numbers):

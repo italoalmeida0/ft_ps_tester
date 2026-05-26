@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: ft_ps_tester
-Version: 1.0.1
+Version: 1.0.2
 Summary: A Python tester for the 42 push_swap project with controlled disorder generation and performance grading.
 Author: Italo Almeida
 License: MIT
@@ -261,6 +261,47 @@ Or:
 
 ```bash
 python3 -m ft_ps_tester ./push_swap 500 complex
+```
+
+---
+
+### Failure reports (`--reports`)
+
+Enable automatic report generation when a test fails (invalid sort, operation limit exceeded, or timeout). Reports are saved in the **same directory as the `push_swap` executable**.
+
+Two files are generated per failure:
+
+| File suffix | Content |
+|-------------|---------|
+| `_ops_N.txt`  | Raw output (operations) from `push_swap` |
+| `_nums_N.txt` | Input numbers passed to `push_swap` |
+
+The numbering (`_1`, `_2`, …) is shared between both files: if either an `_ops_N` or `_nums_N` file already exists, the next number is used so both files always share the same suffix.
+
+Example:
+
+```bash
+ft_ps_tester --reports ./push_swap
+```
+
+If a failure occurs in the `100_simple` test, the following files are created next to `./push_swap`:
+
+```
+report_100_simple_ops_1.txt
+report_100_simple_nums_1.txt
+```
+
+If another failure occurs later (or if one of those files already existed), the next pair becomes:
+
+```
+report_100_simple_ops_2.txt
+report_100_simple_nums_2.txt
+```
+
+You can also use `--reports` with single test runs:
+
+```bash
+ft_ps_tester --reports ./push_swap 500 complex
 ```
 
 ---

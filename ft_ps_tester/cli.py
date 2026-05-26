@@ -4,6 +4,7 @@ import sys
 import os
 import random
 import subprocess
+import glob
 from collections import deque
 
 # ==========================================
@@ -126,6 +127,44 @@ class PushSwapChecker:
         return all(lst[i] <= lst[i+1] for i in range(len(lst)-1))
 
 # ==========================================
+# REPORT GENERATOR
+# ==========================================
+def get_next_report_number(report_dir, size, mode):
+    """Find the next available report number for a given size and mode.
+    
+    A report number n is considered 'used' if either ops or nums file exists.
+    Returns the next available number (1-based).
+    """
+    pattern_ops = os.path.join(report_dir, f"report_{size}_{mode}_ops_*.txt")
+    pattern_nums = os.path.join(report_dir, f"report_{size}_{mode}_nums_*.txt")
+    
+    max_n = 0
+    
+    for pattern in [pattern_ops, pattern_nums]:
+        for filepath in glob.glob(pattern):
+            basename = os.path.basename(filepath)
+            try:
+                parts = basename.replace('.txt', '').split('_')
+                n = int(parts[-1])
+                max_n = max(max_n, n)
+            except (ValueError, IndexError):
+                continue
+    
+    return max_n + 1
+
+def write_report(report_dir, size, mode, sequence_str, ops_str):
+    n = get_next_report_number(report_dir, size, mode)
+    
+    ops_filename = os.path.join(report_dir, f"report_{size}_{mode}_ops_{n}.txt")
+    nums_filename = os.path.join(report_dir, f"report_{size}_{mode}_nums_{n}.txt")
+    
+    with open(ops_filename, 'w') as f:
+        f.write(ops_str)
+    
+    with open(nums_filename, 'w') as f:
+        f.write(sequence_str)
+
+# ==========================================
 # TEST ENGINE
 # ==========================================
 def get_grade_info(size, ops):
@@ -149,7 +188,7 @@ def format_grade_column(ops, grade_text, color):
     padding = 18 - len(visible_str)
     return f"{ops} ({color}{grade_text}{COLORS['RESET']}){' ' * padding}"
 
-def run_test_suite(executable, size, mode):
+def run_test_suite(executable, size, mode, reports_enabled=False):
     min_disorder, max_disorder = MODES[mode]
     
     print(f"{COLORS['CYAN']}>> Testing Size: {size} | Mode: {mode.upper()} {COLORS['RESET']}", end=" ")
@@ -159,11 +198,13 @@ def run_test_suite(executable, size, mode):
     min_ops = float('inf')
     
     failures = []
+    report_dir = os.path.dirname(os.path.abspath(executable)) if reports_enabled else None
     
     for i in range(1, 101):
         disorder = random.uniform(min_disorder, max_disorder)
         sequence = generate_sequence(size, disorder)
         str_seq = [str(x) for x in sequence]
+        result = None
         try:
             result = subprocess.run(
                 [executable, f'--{mode}'] + str_seq,
@@ -192,6 +233,8 @@ def run_test_suite(executable, size, mode):
                     "limit": THRESHOLDS[size]["pass"],
                     "sequence": " ".join(str_seq)
                 })
+                if reports_enabled:
+                    write_report(report_dir, size, mode, " ".join(str_seq), result.stdout)
             else:
                 total_ops += op_count
                 max_ops = max(max_ops, op_count)
@@ -208,6 +251,8 @@ def run_test_suite(executable, size, mode):
                         "limit": THRESHOLDS[size]["pass"],
                         "sequence": " ".join(str_seq)
                     })
+                    if reports_enabled:
+                        write_report(report_dir, size, mode, " ".join(str_seq), result.stdout)
                 else:
                     sys.stdout.write(f"{COLORS['GREEN']}.{COLORS['RESET']}")
                     
@@ -222,6 +267,8 @@ def run_test_suite(executable, size, mode):
                 "limit": THRESHOLDS[size]["pass"],
                 "sequence": " ".join(str_seq)
             })
+            if reports_enabled:
+                write_report(report_dir, size, mode, " ".join(str_seq), "")
             
         sys.stdout.flush()
         
@@ -278,13 +325,20 @@ def print_failures(failures):
 # MAIN ENTRY
 # ==========================================
 def main():
-    if len(sys.argv) < 2 or len(sys.argv) > 4:
+    args = sys.argv[1:]
+    
+    reports_enabled = False
+    if '--reports' in args:
+        reports_enabled = True
+        args = [a for a in args if a != '--reports']
+    
+    if len(args) < 1 or len(args) > 3:
         print(f"Usage:")
-        print(f"  Full Test Suite : {sys.argv[0]} <path_to_push_swap>")
-        print(f"  Specific Test   : {sys.argv[0]} <path_to_push_swap> <size> <mode>")
+        print(f"  Full Test Suite : {sys.argv[0]} [--reports] <path_to_push_swap>")
+        print(f"  Specific Test   : {sys.argv[0]} [--reports] <path_to_push_swap> <size> <mode>")
         sys.exit(1)
         
-    executable = sys.argv[1]
+    executable = args[0]
     if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
         print(f"Error: '{executable}' not found or not executable.")
         sys.exit(1)
@@ -292,35 +346,35 @@ def main():
     all_failures = []
     results = []
 
-    if len(sys.argv) == 2:
+    if len(args) == 1:
         print(f"{COLORS['BOLD']}Running FULL TEST SUITE for {executable}{COLORS['RESET']}\n")
         sizes = [100, 500]
         modes = ["simple", "medium", "complex", "adaptive"]
         
         for size in sizes:
             for mode in modes:
-                stats, fails = run_test_suite(executable, size, mode)
+                stats, fails = run_test_suite(executable, size, mode, reports_enabled)
                 results.append(stats)
                 all_failures.extend(fails)
                 
     else:
         try:
-            size = int(sys.argv[2])
+            size = int(args[1])
         except ValueError:
             print("Error: Size must be an integer.")
             sys.exit(1)
             
-        mode = sys.argv[3].lower() if len(sys.argv) == 4 else "adaptive"
+        mode = args[2].lower() if len(args) == 3 else "adaptive"
         if mode not in MODES:
             print(f"Error: Invalid mode. Choose from {list(MODES.keys())}")
             sys.exit(1)
             
         print(f"{COLORS['BOLD']}Running SINGLE TEST SUITE for {executable}{COLORS['RESET']}\n")
-        stats, fails = run_test_suite(executable, size, mode)
+        stats, fails = run_test_suite(executable, size, mode, reports_enabled)
         results.append(stats)
         all_failures.extend(fails)
 
-        # Print detailed failures if any exist
+    # Print detailed failures if any exist
     print_failures(all_failures)
 
     # Print global summary
@@ -350,4 +404,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
