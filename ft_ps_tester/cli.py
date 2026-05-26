@@ -84,47 +84,70 @@ class PushSwapChecker:
     def __init__(self, sequence):
         self.stack_a = deque(sequence)
         self.stack_b = deque()
+        self.has_unnecessary_ops = False
 
     def exec_op(self, op):
-        if op == "sa" and len(self.stack_a) >= 2:
-            self.stack_a[0], self.stack_a[1] = self.stack_a[1], self.stack_a[0]
-        elif op == "sb" and len(self.stack_b) >= 2:
-            self.stack_b[0], self.stack_b[1] = self.stack_b[1], self.stack_b[0]
+        if op == "sa":
+            if len(self.stack_a) >= 2:
+                self.stack_a[0], self.stack_a[1] = self.stack_a[1], self.stack_a[0]
+            else:
+                self.has_unnecessary_ops = True
+        elif op == "sb":
+            if len(self.stack_b) >= 2:
+                self.stack_b[0], self.stack_b[1] = self.stack_b[1], self.stack_b[0]
+            else:
+                self.has_unnecessary_ops = True
         elif op == "ss":
-            self.exec_op("sa")
-            self.exec_op("sb")
-        elif op == "pa" and len(self.stack_b) >= 1:
-            self.stack_a.appendleft(self.stack_b.popleft())
-        elif op == "pb" and len(self.stack_a) >= 1:
-            self.stack_b.appendleft(self.stack_a.popleft())
-        elif op == "ra" and len(self.stack_a) >= 2:
-            self.stack_a.append(self.stack_a.popleft())
-        elif op == "rb" and len(self.stack_b) >= 2:
-            self.stack_b.append(self.stack_b.popleft())
+            self.exec_op("sa"); self.exec_op("sb")
+        elif op == "pa":
+            if len(self.stack_b) >= 1:
+                self.stack_a.appendleft(self.stack_b.popleft())
+            else:
+                self.has_unnecessary_ops = True
+        elif op == "pb":
+            if len(self.stack_a) >= 1:
+                self.stack_b.appendleft(self.stack_a.popleft())
+            else:
+                self.has_unnecessary_ops = True
+        elif op == "ra":
+            if len(self.stack_a) >= 2:
+                self.stack_a.append(self.stack_a.popleft())
+            else:
+                self.has_unnecessary_ops = True
+        elif op == "rb":
+            if len(self.stack_b) >= 2:
+                self.stack_b.append(self.stack_b.popleft())
+            else:
+                self.has_unnecessary_ops = True
         elif op == "rr":
-            self.exec_op("ra")
-            self.exec_op("rb")
-        elif op == "rra" and len(self.stack_a) >= 2:
-            self.stack_a.appendleft(self.stack_a.pop())
-        elif op == "rrb" and len(self.stack_b) >= 2:
-            self.stack_b.appendleft(self.stack_b.pop())
+            self.exec_op("ra"); self.exec_op("rb")
+        elif op == "rra":
+            if len(self.stack_a) >= 2:
+                self.stack_a.appendleft(self.stack_a.pop())
+            else:
+                self.has_unnecessary_ops = True
+        elif op == "rrb":
+            if len(self.stack_b) >= 2:
+                self.stack_b.appendleft(self.stack_b.pop())
+            else:
+                self.has_unnecessary_ops = True
         elif op == "rrr":
-            self.exec_op("rra")
-            self.exec_op("rrb")
+            self.exec_op("rra"); self.exec_op("rrb")
         else:
-            return False 
-        return True
+            return False;
+        return True;
 
     def validate(self, ops_list):
         for op in ops_list:
             if not self.exec_op(op):
-                return False
-            
+                return False, False
+
         if len(self.stack_b) != 0:
-            return False
-            
+             return False, False
+           
         lst = list(self.stack_a)
-        return all(lst[i] <= lst[i+1] for i in range(len(lst)-1))
+        is_sorted = all(lst[i] <= lst[i+1] for i in range(len(lst)-1))
+        return is_sorted, self.has_unnecessary_ops
 
 # ==========================================
 # REPORT GENERATOR
@@ -196,8 +219,10 @@ def run_test_suite(executable, size, mode, reports_enabled=False):
     total_ops = 0
     max_ops = 0
     min_ops = float('inf')
+    warnings_count = 0
     
     failures = []
+    warnings = []
     report_dir = os.path.dirname(os.path.abspath(executable)) if reports_enabled else None
     
     for i in range(1, 101):
@@ -214,13 +239,13 @@ def run_test_suite(executable, size, mode, reports_enabled=False):
                 timeout=10
             )
             
-            ops = result.stdout.strip().split('\n')
+            ops = result.stdout.strip().split()
             if ops == ['']:
                 ops = []
                 
             op_count = len(ops)
             checker = PushSwapChecker(sequence)
-            is_sorted = checker.validate(ops)
+            is_sorted, has_warnings = checker.validate(ops)
             
             if not is_sorted:
                 sys.stdout.write(f"{COLORS['RED']}!{COLORS['RESET']}")
@@ -253,6 +278,18 @@ def run_test_suite(executable, size, mode, reports_enabled=False):
                     })
                     if reports_enabled:
                         write_report(report_dir, size, mode, " ".join(str_seq), result.stdout)
+                elif has_warnings:
+                    sys.stdout.write(f"{COLORS['YELLOW']}:{COLORS['RESET']}")
+                    warnings_count += 1
+                    warnings.append({
+                        "size": size,
+                        "mode": mode,
+                        "disorder": disorder,
+                        "reason": "Unnecessary operations detected (e.g., sa/sb/pa/pb/rotate on insufficient elements).",
+                        "ops": op_count,
+                        "limit": THRESHOLDS[size]["pass"],
+                        "sequence": " ".join(str_seq)
+                    })
                 else:
                     sys.stdout.write(f"{COLORS['GREEN']}.{COLORS['RESET']}")
                     
@@ -283,8 +320,9 @@ def run_test_suite(executable, size, mode, reports_enabled=False):
         "max": max_ops,
         "min": min_ops if min_ops != float('inf') else 0,
         "avg": avg_ops,
-        "fails": len(failures)
-    }, failures
+        "fails": len(failures),
+        "warnings": warnings_count
+    }, failures, warnings
 
 def print_failures(failures):
     if not failures:
@@ -321,6 +359,33 @@ def print_failures(failures):
         print(f"Operations : {f['ops']} / Limit: {f['limit']}")
         print("-" * 80)
 
+def print_warnings(warnings):
+    if not warnings:
+        return
+        
+    filtered_warnings = []
+    seen = {}
+    
+    # Filter warnings: max 1 per (size, mode)
+    for w in warnings:
+        key = (w['size'], w['mode'])
+        if key not in seen:
+            filtered_warnings.append(w)
+            seen[key] = True
+            
+    print("\n" + "="*80)
+    print(f"{COLORS['YELLOW']}{COLORS['BOLD']}WARNING REPORT {COLORS['RESET']}")
+    print("="*80)
+    
+    for idx, w in enumerate(filtered_warnings):
+        print(f"\n{COLORS['YELLOW']}--- Warning {idx + 1} ---{COLORS['RESET']}")
+        print(f"Size       : {w['size']}")
+        print(f"Mode       : {w['mode'].upper()}")
+        print(f"Disorder   : {w['disorder']:.2f}%")
+        print(f"Reason     : {COLORS['YELLOW']}{w['reason']}{COLORS['RESET']}")
+        print(f"Operations : {w['ops']} / Limit: {w['limit']}")
+        print("-" * 80)
+
 # ==========================================
 # MAIN ENTRY
 # ==========================================
@@ -344,6 +409,7 @@ def main():
         sys.exit(1)
         
     all_failures = []
+    all_warnings = []
     results = []
 
     if len(args) == 1:
@@ -353,9 +419,10 @@ def main():
         
         for size in sizes:
             for mode in modes:
-                stats, fails = run_test_suite(executable, size, mode, reports_enabled)
+                stats, fails, warns = run_test_suite(executable, size, mode, reports_enabled)
                 results.append(stats)
                 all_failures.extend(fails)
+                all_warnings.extend(warns)
                 
     else:
         try:
@@ -370,19 +437,21 @@ def main():
             sys.exit(1)
             
         print(f"{COLORS['BOLD']}Running SINGLE TEST SUITE for {executable}{COLORS['RESET']}\n")
-        stats, fails = run_test_suite(executable, size, mode, reports_enabled)
+        stats, fails, warns = run_test_suite(executable, size, mode, reports_enabled)
         results.append(stats)
         all_failures.extend(fails)
+        all_warnings.extend(warns)
 
-    # Print detailed failures if any exist
+    # Print detailed failures and warnings if any exist
     print_failures(all_failures)
+    print_warnings(all_warnings)
 
     # Print global summary
-    print("\n" + "="*88)
+    print("\n" + "="*96)
     print(f"{COLORS['BOLD']}PERFORMANCE SUMMARY{COLORS['RESET']}")
-    print("="*88)
-    print(f"{'SIZE':<6} | {'MODE':<8} | {'MAX (GRADE)':<18} | {'MIN (GRADE)':<18} | {'AVG (GRADE)':<18} | {'FAILS'}")
-    print("-" * 88)
+    print("="*96)
+    print(f"{'SIZE':<6} | {'MODE':<8} | {'MAX (GRADE)':<18} | {'MIN (GRADE)':<18} | {'AVG (GRADE)':<18} | {'FAILS':<6} | {'WARN'}")
+    print("-" * 96)
     
     for r in results:
         # Get grade info (text and color)
@@ -396,10 +465,11 @@ def main():
         col_avg = format_grade_column(r['avg'], avg_text, avg_color)
         
         fail_str = f"{COLORS['RED']}{r['fails']}{COLORS['RESET']}" if r['fails'] > 0 else f"{COLORS['GREEN']}0{COLORS['RESET']}"
+        warn_str = f"{COLORS['YELLOW']}{r['warnings']}{COLORS['RESET']}" if r['warnings'] > 0 else f"{COLORS['GREEN']}0{COLORS['RESET']}"
         
-        print(f"{r['size']:<6} | {r['mode'].upper():<8} | {col_max} | {col_min} | {col_avg} | {fail_str}")
+        print(f"{r['size']:<6} | {r['mode'].upper():<8} | {col_max} | {col_min} | {col_avg} | {fail_str:<6} | {warn_str}")
         
-    print("="*88)
+    print("="*96)
 
 
 if __name__ == "__main__":

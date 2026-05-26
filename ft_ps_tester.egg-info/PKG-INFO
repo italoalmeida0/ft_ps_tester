@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: ft_ps_tester
-Version: 1.0.2
+Version: 1.0.3
 Summary: A Python tester for the 42 push_swap project with controlled disorder generation and performance grading.
 Author: Italo Almeida
 License: MIT
