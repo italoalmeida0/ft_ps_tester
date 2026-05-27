@@ -5,6 +5,8 @@ import os
 import random
 import subprocess
 import glob
+import time
+import math
 from collections import deque
 
 # ==========================================
@@ -426,6 +428,324 @@ def print_warnings(warnings):
         print("-" * 80)
 
 # ==========================================
+# BIG O ANALYSIS
+# ==========================================
+BIGO_SIZES = [50, 100, 200, 400, 800]
+
+BIGO_THRESHOLDS_OPS = {
+    "O(n)":       {"coef": 1.0,     "ratio_max": 2.2},
+    "O(n log n)": {"coef": 1.14,   "ratio_max": 3.0},
+    "O(n sqrt(n))": {"coef": 1.09, "ratio_max": 3.5},
+    "O(n^2)":     {"coef": 0.152,  "ratio_max": 4.0},
+    "O(n^3)":     {"coef": 0.00095,"ratio_max": 8.0},
+}
+
+BIGO_THRESHOLDS_TIME = {
+    "O(n)":       {"coef": 0.05,   "ratio_max": 2.2},
+    "O(n log n)": {"coef": 0.08,   "ratio_max": 3.0},
+    "O(n sqrt(n))": {"coef": 0.12, "ratio_max": 3.5},
+    "O(n^2)":     {"coef": 0.25,   "ratio_max": 4.0},
+    "O(n^3)":     {"coef": 1.0,    "ratio_max": 8.0},
+}
+
+def max_value_for(thresholds, complexity, n):
+    """Calculate expected max value for a given complexity class and input size n."""
+    if complexity == "O(n)":
+        return thresholds["O(n)"]["coef"] * n
+    elif complexity == "O(n log n)":
+        return thresholds["O(n log n)"]["coef"] * n * math.log2(n)
+    elif complexity == "O(n sqrt(n))":
+        return thresholds["O(n sqrt(n))"]["coef"] * n * math.sqrt(n)
+    elif complexity == "O(n^2)":
+        return thresholds["O(n^2)"]["coef"] * n * n
+    elif complexity == "O(n^3)":
+        return thresholds["O(n^3)"]["coef"] * n * n * n
+    else:
+        return float('inf')
+
+def classify_by_metric(values_by_size, thresholds, metric_name):
+    sizes = sorted(values_by_size.keys())
+    if len(sizes) < 2:
+        return "UNKNOWN", "Insufficient data"
+
+    ratios = []
+    for i in range(1, len(sizes)):
+        prev = values_by_size[sizes[i-1]]
+        curr = values_by_size[sizes[i]]
+        if prev > 0:
+            ratios.append(curr / prev)
+
+    if not ratios:
+        return "UNKNOWN", "No ratio data"
+
+    avg_ratio = sum(ratios) / len(ratios)
+    max_n = max(sizes)
+    max_val = max(values_by_size.values())
+
+    for comp in ["O(n)", "O(n log n)", "O(n sqrt(n))", "O(n^2)"]:
+        limit = max_value_for(thresholds, comp, max_n)
+        if max_val <= limit and avg_ratio <= thresholds[comp]["ratio_max"]:
+            return comp, f"Avg ratio: {avg_ratio:.2f}x, Max {metric_name} at n={max_n}: {max_val:.2f}"
+
+    if avg_ratio <= thresholds["O(n^3)"]["ratio_max"]:
+        return "O(n^3)", f"Avg ratio: {avg_ratio:.2f}x, Max {metric_name} at n={max_n}: {max_val:.2f}"
+    else:
+        return "O(>n^3)", f"Avg ratio: {avg_ratio:.2f}x, Max {metric_name} at n={max_n}: {max_val:.2f}"
+
+# Expected complexity per mode (best to worst acceptable)
+BIGO_EXPECTATIONS = {
+    "simple":   {"max_acceptable": "O(n^2)",       "target": "O(n^2)",       "description": "<= O(n^2)"},
+    "medium":   {"max_acceptable": "O(n sqrt(n))", "target": "O(n sqrt(n))", "description": "<= O(n sqrt(n))"},
+    "complex":  {"max_acceptable": "O(n log n)",   "target": "O(n log n)",   "description": "O(n log n)"},
+    "adaptive": {"max_acceptable": "O(n^2)",       "target": "O(n log n)",   "description": "O(n^2) down to O(n log n)"},
+}
+
+BIGO_ORDER = ["O(n)", "O(n log n)", "O(n sqrt(n))", "O(n^2)", "O(n^3)", "O(>n^3)"]
+
+def check_expectation(complexity, mode):
+    """Returns (is_acceptable, expectation_str)"""
+    exp = BIGO_EXPECTATIONS.get(mode)
+    if not exp:
+        return True, ""
+
+    max_acceptable = exp["max_acceptable"]
+    try:
+        comp_idx = BIGO_ORDER.index(complexity)
+    except ValueError:
+        comp_idx = len(BIGO_ORDER) - 1
+
+    try:
+        max_idx = BIGO_ORDER.index(max_acceptable)
+    except ValueError:
+        max_idx = len(BIGO_ORDER) - 1
+
+    is_ok = comp_idx <= max_idx
+    return is_ok, exp["description"]
+
+def run_bigo_test(executable, mode):
+    min_disorder, max_disorder = MODES[mode]
+    ops_by_size = {}
+    time_by_size = {}
+    all_failures = []
+
+    print(f"\n{COLORS['BOLD']}>> Big-O Analysis | Mode: {mode.upper()}{COLORS['RESET']}")
+    print(f"{'Size':>6} | {'Tests':>6} | {'Avg Ops':>10} | {'Ops Ratio':>9} | {'Avg Time(ms)':>12} | {'Time Ratio':>10} | {'Sorted'}")
+    print("-" * 82)
+
+    prev_avg_ops = None
+    prev_avg_time = None
+
+    for size in BIGO_SIZES:
+        total_ops = 0
+        total_time_ms = 0.0
+        failed = 0
+
+        # Warm-up runs: execute a few times without measuring to stabilize caches
+        for _ in range(3):
+            disorder = random.uniform(min_disorder, max_disorder)
+            sequence = generate_sequence(size, disorder)
+            str_seq = [str(x) for x in sequence]
+            try:
+                subprocess.run(
+                    [executable, f'--{mode}'] + str_seq,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=30
+                )
+            except subprocess.TimeoutExpired:
+                pass
+
+        # Official measurement runs
+        for _ in range(100):
+            disorder = random.uniform(min_disorder, max_disorder)
+            sequence = generate_sequence(size, disorder)
+            str_seq = [str(x) for x in sequence]
+
+            start_time = time.perf_counter()
+            try:
+                result = subprocess.run(
+                    [executable, f'--{mode}'] + str_seq,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=30
+                )
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+                ops = result.stdout.strip().split()
+                if ops == ['']:
+                    ops = []
+                op_count = len(ops)
+
+                checker = PushSwapChecker(sequence)
+                is_sorted, _, _ = checker.validate(ops)
+
+                if not is_sorted:
+                    failed += 1
+                    all_failures.append({
+                        "size": size,
+                        "mode": mode,
+                        "reason": "Failed to sort properly",
+                        "ops": op_count,
+                        "sequence": " ".join(str_seq)
+                    })
+                else:
+                    total_ops += op_count
+                    total_time_ms += elapsed_ms
+
+            except subprocess.TimeoutExpired:
+                failed += 1
+                all_failures.append({
+                    "size": size,
+                    "mode": mode,
+                    "reason": "Timeout",
+                    "ops": "N/A",
+                    "sequence": " ".join(str_seq)
+                })
+
+        successful = 100 - failed
+        if successful > 0:
+            avg_ops = total_ops / successful
+            avg_time = total_time_ms / successful
+        else:
+            avg_ops = float('inf')
+            avg_time = float('inf')
+
+        ops_by_size[size] = avg_ops
+        time_by_size[size] = avg_time
+
+        if prev_avg_ops and prev_avg_ops > 0:
+            ops_ratio = avg_ops / prev_avg_ops
+            ops_ratio_str = f"{ops_ratio:.2f}x"
+        else:
+            ops_ratio_str = "N/A"
+
+        if prev_avg_time and prev_avg_time > 0:
+            time_ratio = avg_time / prev_avg_time
+            time_ratio_str = f"{time_ratio:.2f}x"
+        else:
+            time_ratio_str = "N/A"
+
+        if failed > 0:
+            status = f"{COLORS['RED']}FAIL ({failed}/100){COLORS['RESET']}"
+        else:
+            status = f"{COLORS['GREEN']}PASS{COLORS['RESET']}"
+
+        ops_str = f"{avg_ops:.0f}" if avg_ops != float('inf') else "INF"
+        time_str = f"{avg_time:.2f}" if avg_time != float('inf') else "INF"
+
+        print(f"{size:>6} | {successful:>6} | {ops_str:>10} | {ops_ratio_str:>9} | {time_str:>12} | {time_ratio_str:>10} | {status}")
+        prev_avg_ops = avg_ops if avg_ops != float('inf') else None
+        prev_avg_time = avg_time if avg_time != float('inf') else None
+
+    ops_complexity, ops_details = classify_by_metric(ops_by_size, BIGO_THRESHOLDS_OPS, "ops")
+    time_complexity, time_details = classify_by_metric(time_by_size, BIGO_THRESHOLDS_TIME, "time(ms)")
+
+    print("-" * 82)
+    print(f"{COLORS['BOLD']}Ops Complexity:  {COLORS['CYAN']}{ops_complexity}{COLORS['RESET']} ({ops_details})")
+    print(f"{COLORS['BOLD']}Time Complexity: {COLORS['CYAN']}{time_complexity}{COLORS['RESET']} ({time_details})")
+    print()
+
+    return {
+        "mode": mode,
+        "ops_complexity": ops_complexity,
+        "ops_details": ops_details,
+        "time_complexity": time_complexity,
+        "time_details": time_details,
+        "ops_by_size": ops_by_size,
+        "time_by_size": time_by_size,
+        "failures": all_failures
+    }
+
+def run_bigo_analysis(executable):
+    print(f"\n{COLORS['BOLD']}{'='*80}")
+    print(f"  BIG-O COMPLEXITY ANALYSIS")
+    print(f"{'='*80}{COLORS['RESET']}")
+    print(f"\nThis analysis runs 100 tests per size per mode.")
+    print(f"Sizes tested: {BIGO_SIZES}")
+    print(f"Each test measures operations and execution time.")
+    print(f"Growth ratio between consecutive sizes determines complexity.\n")
+
+    all_results = []
+    all_failures = []
+
+    for mode in ["simple", "medium", "complex", "adaptive"]:
+        res = run_bigo_test(executable, mode)
+        all_results.append(res)
+        all_failures.extend(res["failures"])
+
+    def strip_ansi(s):
+        import re
+        return re.sub(r'\x1b\[[0-9;]*m', '', s)
+
+    def cell(text, color, width):
+        """Return text with color, padded to visible width."""
+        plain = strip_ansi(text)
+        pad = width - len(plain)
+        if pad < 0:
+            pad = 0
+        return f"{color}{plain}{COLORS['RESET']}{' ' * pad}"
+
+    # Summary table
+    print(f"{COLORS['BOLD']}{'='*100}")
+    print(f"  BIG-O SUMMARY")
+    print(f"{'='*100}{COLORS['RESET']}")
+    print(f"\n{'Mode':<10} | {'Ops Big-O':<12} | {'Ops Status':<10} | {'Time Big-O':<12} | {'Time Status':<11} | {'Overall':<8} | {'Expected':<25}")
+    print("-" * 115)
+    for r in all_results:
+        mode = r["mode"].upper()
+        ops_comp = r["ops_complexity"]
+        time_comp = r["time_complexity"]
+        ops_ok, expected_desc = check_expectation(ops_comp, r["mode"])
+        time_ok, _ = check_expectation(time_comp, r["mode"])
+
+        ops_status_color = COLORS["GREEN"] if ops_ok else COLORS["RED"]
+        time_status_color = COLORS["GREEN"] if time_ok else COLORS["RED"]
+        overall_color = COLORS["GREEN"] if (ops_ok and time_ok) else COLORS["RED"]
+        overall_text = "PASS" if (ops_ok and time_ok) else "FAIL"
+
+        ops_color = COLORS["GREEN"] if ops_comp in ["O(n)", "O(n log n)"] else COLORS["YELLOW"] if ops_comp in ["O(n sqrt(n))", "O(n^2)"] else COLORS["RED"]
+        time_color = COLORS["GREEN"] if time_comp in ["O(n)", "O(n log n)"] else COLORS["YELLOW"] if time_comp in ["O(n sqrt(n))", "O(n^2)"] else COLORS["RED"]
+
+        line = f"{mode:<10} | "
+        line += cell(ops_comp, ops_color, 12) + " | "
+        line += cell("OK" if ops_ok else "FAIL", ops_status_color, 10) + " | "
+        line += cell(time_comp, time_color, 12) + " | "
+        line += cell("OK" if time_ok else "FAIL", time_status_color, 11) + " | "
+        line += cell(overall_text, overall_color, 8) + " | "
+        line += f"{expected_desc:<25}"
+        print(line)
+    print()
+
+    # Per-mode details
+    print(f"{COLORS['BOLD']}Details by mode:{COLORS['RESET']}")
+    for r in all_results:
+        mode = r["mode"].upper()
+        print(f"  {mode:<8} | Ops:  {r['ops_details']}")
+        print(f"           | Time: {r['time_details']}")
+    print()
+
+    # Expected classification reference
+    print(f"{COLORS['BOLD']}Reference (Operations & Time):{COLORS['RESET']}")
+    print(f"  Simple  : Expected <= O(n^2)  (nearly sorted)")
+    print(f"  Medium  : Expected <= O(n sqrt(n))")
+    print(f"  Complex : Expected O(n log n) (optimal comparison sort)")
+    print(f"  Adaptive: Expected O(n^2) down to O(n log n) (should adapt to disorder)")
+    print()
+    print(f"{COLORS['BOLD']}Note:{COLORS['RESET']} Overall PASS requires both Ops and Time to meet expectations.")
+
+    if all_failures:
+        print(f"{COLORS['RED']}Failures detected during Big-O analysis:{COLORS['RESET']}")
+        for f in all_failures[:10]:
+            print(f"  Size {f['size']} {f['mode']}: {f['reason']}")
+        if len(all_failures) > 10:
+            print(f"  ... and {len(all_failures) - 10} more failures")
+        print()
+
+    return all_results
+
+# ==========================================
 # MAIN ENTRY
 # ==========================================
 def main():
@@ -435,17 +755,27 @@ def main():
     if '--reports' in args:
         reports_enabled = True
         args = [a for a in args if a != '--reports']
+
+    bigo_mode = False
+    if '--big-o' in args:
+        bigo_mode = True
+        args = [a for a in args if a != '--big-o']
     
     if len(args) < 1 or len(args) > 3:
         print(f"Usage:")
         print(f"  Full Test Suite : {sys.argv[0]} [--reports] <path_to_push_swap>")
         print(f"  Specific Test   : {sys.argv[0]} [--reports] <path_to_push_swap> <size> <mode>")
+        print(f"  Big-O Analysis  : {sys.argv[0]} --big-o <path_to_push_swap>")
         sys.exit(1)
         
     executable = args[0]
     if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
         print(f"Error: '{executable}' not found or not executable.")
         sys.exit(1)
+
+    if bigo_mode:
+        run_bigo_analysis(executable)
+        sys.exit(0)
         
     all_failures = []
     all_warnings = []

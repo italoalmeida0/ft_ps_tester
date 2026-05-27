@@ -16,6 +16,7 @@ A Python-based tester for the **42 push_swap** project. It generates controlled 
 - **Output validation** — simulates operations to verify sorting correctness.
 - **Performance grading** — compares operation counts against 42 thresholds (excellent / good / pass / fail).
 - **Failure report** — concise summary of timeouts, invalid operations, and limit exceedances.
+- **Big-O complexity analysis** (`--big-o`) — measures algorithmic scaling across progressively larger inputs with per-mode expectations.
 
 ---
 
@@ -29,6 +30,7 @@ A Python-based tester for the **42 push_swap** project. It generates controlled 
 ## Installation
 
 > **Tip:** If you run into installation errors, try updating `pip` first:
+>
 > ```bash
 > pip install --upgrade pip
 > # or
@@ -245,10 +247,10 @@ Enable automatic report generation when a test fails (invalid sort, operation li
 
 Two files are generated per failure:
 
-| File suffix | Content |
-|-------------|---------|
+| File suffix   | Content                                  |
+| ------------- | ---------------------------------------- |
 | `_ops_N.txt`  | Raw output (operations) from `push_swap` |
-| `_nums_N.txt` | Input numbers passed to `push_swap` |
+| `_nums_N.txt` | Input numbers passed to `push_swap`      |
 
 The numbering (`_1`, `_2`, …) is shared between both files: if either an `_ops_N` or `_nums_N` file already exists, the next number is used so both files always share the same suffix.
 
@@ -280,16 +282,131 @@ ft_ps_tester --reports ./push_swap 500 complex
 
 ---
 
+### Big-O Complexity Analysis (`--big-o`)
+
+Run a dedicated complexity analysis that measures how your algorithm scales with input size. This mode runs **100 tests per size per mode** across progressively larger sequences:
+
+**Sizes tested:** 50, 100, 200, 400, 800
+
+For each size, the tester:
+
+1. Generates sequences with disorder appropriate to the mode
+2. Runs **3 warm-up executions** (not measured) to stabilize system caches
+3. Runs **100 measured executions** and tracks:
+   - **Average number of operations**
+   - **Average execution time**
+   - **Growth ratio** between consecutive sizes
+4. Validates that the output is correctly sorted
+
+If any test fails to sort or times out, the failure is reported and that size/mode combination is marked.
+
+**Classification criteria:**
+
+Both operations and time are classified independently using dynamic formulas based on input size `n`:
+
+**Operations:**
+
+| Complexity     | Formula (max ops)    | Avg growth ratio |
+| -------------- | -------------------- | ---------------- |
+| `O(n)`         | `1.0 * n`            | ≤ 2.2x           |
+| `O(n log n)`   | `1.14 * n * log₂(n)` | ≤ 3.0x           |
+| `O(n sqrt(n))` | `1.09 * n * sqrt(n)` | ≤ 3.5x           |
+| `O(n²)`        | `0.152 * n²`         | ≤ 4.0x           |
+| `O(n³)`        | `0.00095 * n³`       | ≤ 8.0x           |
+| `O(>n³)`       | > `0.00095 * n³`     | > 8.0x           |
+
+**Time (ms):**
+
+| Complexity     | Formula (max ms)     | Avg growth ratio |
+| -------------- | -------------------- | ---------------- |
+| `O(n)`         | `0.05 * n`           | ≤ 2.2x           |
+| `O(n log n)`   | `0.08 * n * log₂(n)` | ≤ 3.0x           |
+| `O(n sqrt(n))` | `0.12 * n * sqrt(n)` | ≤ 3.5x           |
+| `O(n²)`        | `0.25 * n²`          | ≤ 4.0x           |
+| `O(n³)`        | `1.0 * n³`           | ≤ 8.0x           |
+
+> **Example:** At n=800, `O(n²)` max ops = `0.152 * 800² ≈ 97,280`. The coefficients are calibrated for push_swap output patterns.
+
+**Expected complexity per mode:**
+
+| Mode       | Expected complexity          | Description                              |
+| ---------- | ---------------------------- | ---------------------------------------- |
+| `simple`   | ≤ `O(n²)`                    | Nearly sorted — should stay within n²    |
+| `medium`   | ≤ `O(n sqrt(n))`             | Moderate disorder — better than n²       |
+| `complex`  | `O(n log n)`                 | Heavily shuffled — optimal sort expected |
+| `adaptive` | `O(n²)` down to `O(n log n)` | Should adapt based on disorder level     |
+
+**Usage:**
+
+```bash
+ft_ps_tester --big-o ./push_swap
+```
+
+Or via module:
+
+```bash
+python3 -m ft_ps_tester --big-o ./push_swap
+```
+
+**Example output:**
+
+```
+================================================================================
+  BIG-O COMPLEXITY ANALYSIS
+================================================================================
+
+>> Big-O Analysis | Mode: SIMPLE
+  Size |  Tests |    Avg Ops |  Ops Ratio | Avg Time(ms) | Time Ratio | Status
+----------------------------------------------------------------------------------
+    50 |    100 |        450 |        N/A |         2.10 |        N/A | PASS
+   100 |    100 |        980 |      2.18x |         4.50 |      2.14x | PASS
+   ...
+----------------------------------------------------------------------------------
+Ops Complexity:  O(n^2) (Avg ratio: 3.29x, Max ops at n=800: 75000)
+Time Complexity: O(n log n) (Avg ratio: 2.15x, Max time(ms) at n=800: 35.20)
+
+================================================================================
+  BIG-O SUMMARY
+================================================================================
+
+Mode       | Ops Big-O    | Ops Status | Time Big-O   | Time Status | Overall | Expected
+-------------------------------------------------------------------------------------------------------------------
+SIMPLE     | O(n log n)   | OK         | O(n^2)       | OK          | PASS    | <= O(n^2)
+MEDIUM     | O(n log n)   | OK         | O(n^2)       | FAIL        | FAIL    | <= O(n sqrt(n))
+COMPLEX    | O(n log n)   | OK         | O(n^2)       | FAIL        | FAIL    | O(n log n)
+ADAPTIVE   | O(n log n)   | OK         | O(n^2)       | OK          | PASS    | O(n^2) down to O(n log n)
+
+Details by mode:
+  SIMPLE   | Ops:  Avg ratio: 2.40x, Max ops at n=800: 7732
+           | Time: Avg ratio: 3.90x, Max time(ms) at n=800: 206.76
+  MEDIUM   | Ops:  Avg ratio: 2.40x, Max ops at n=800: 7732
+           | Time: Avg ratio: 3.90x, Max time(ms) at n=800: 206.76
+  COMPLEX  | Ops:  Avg ratio: 2.40x, Max ops at n=800: 7732
+           | Time: Avg ratio: 3.90x, Max time(ms) at n=800: 206.76
+  ADAPTIVE | Ops:  Avg ratio: 2.40x, Max ops at n=800: 7732
+           | Time: Avg ratio: 3.90x, Max time(ms) at n=800: 206.76
+
+Reference (Operations & Time):
+  Simple  : Expected <= O(n^2)  (nearly sorted)
+  Medium  : Expected <= O(n sqrt(n))
+  Complex : Expected O(n log n) (optimal comparison sort)
+  Adaptive: Expected O(n^2) down to O(n log n) (should adapt to disorder)
+
+Note: Overall PASS requires both Ops and Time to meet expectations.
+```
+
+---
+
 ## Modes / Flags
 
 Your `push_swap` must support the following flags (passed as `--<mode>` before the numbers):
 
-| Mode      | Disorder range | Description                              |
-|-----------|----------------|------------------------------------------|
-| `simple`  | 15.0% – 19.9%  | Nearly sorted sequences                  |
-| `medium`  | 20.0% – 49.9%  | Moderately shuffled sequences            |
-| `complex` | 50.0% – 55.0%  | Heavily shuffled sequences               |
-| `adaptive`| 15.0% – 55.0%  | Random disorder across the full spectrum |
+| Mode       | Disorder range | Description                              |
+| ---------- | -------------- | ---------------------------------------- |
+| `simple`   | 15.0% – 19.9%  | Nearly sorted sequences                  |
+| `medium`   | 20.0% – 49.9%  | Moderately shuffled sequences            |
+| `complex`  | 50.0% – 55.0%  | Heavily shuffled sequences               |
+| `adaptive` | 15.0% – 55.0%  | Random disorder across the full spectrum |
 
 > **Note:** If your `push_swap` does **not** implement these flags, the tester will still work if your program ignores unknown flags and simply sorts the provided numbers. However, for accurate mode-based testing, your `push_swap` should parse and use the flag to adjust its algorithm.
 
@@ -297,12 +414,13 @@ Your `push_swap` must support the following flags (passed as `--<mode>` before t
 
 ## Grading Thresholds
 
-| Size | Excellent | Good  | Pass  |
-|------|-----------|-------|-------|
-| 100  | < 700     | < 1500| ≤ 2000|
-| 500  | < 5500    | < 8000| ≤ 12000|
+| Size | Excellent | Good   | Pass    |
+| ---- | --------- | ------ | ------- |
+| 100  | < 700     | < 1500 | ≤ 2000  |
+| 500  | < 5500    | < 8000 | ≤ 12000 |
 
 Results are shown with color-coded grades:
+
 - **EXCELLENT** — green
 - **GOOD** — blue
 - **PASS** — yellow
