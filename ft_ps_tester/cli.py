@@ -85,69 +85,93 @@ class PushSwapChecker:
         self.stack_a = deque(sequence)
         self.stack_b = deque()
         self.has_unnecessary_ops = False
+        self.unnecessary_ops = {}
+
+    def _count_unnecessary(self, op):
+        self.has_unnecessary_ops = True
+        self.unnecessary_ops[op] = self.unnecessary_ops.get(op, 0) + 1
 
     def exec_op(self, op):
         if op == "sa":
             if len(self.stack_a) >= 2:
                 self.stack_a[0], self.stack_a[1] = self.stack_a[1], self.stack_a[0]
             else:
-                self.has_unnecessary_ops = True
+                self._count_unnecessary("sa")
         elif op == "sb":
             if len(self.stack_b) >= 2:
                 self.stack_b[0], self.stack_b[1] = self.stack_b[1], self.stack_b[0]
             else:
-                self.has_unnecessary_ops = True
+                self._count_unnecessary("sb")
         elif op == "ss":
-            self.exec_op("sa"); self.exec_op("sb")
+            if len(self.stack_a) >= 2 or len(self.stack_b) >= 2:
+                if len(self.stack_a) >= 2:
+                    self.stack_a[0], self.stack_a[1] = self.stack_a[1], self.stack_a[0]
+                if len(self.stack_b) >= 2:
+                    self.stack_b[0], self.stack_b[1] = self.stack_b[1], self.stack_b[0]
+            else:
+                self._count_unnecessary("ss")
+
         elif op == "pa":
             if len(self.stack_b) >= 1:
                 self.stack_a.appendleft(self.stack_b.popleft())
             else:
-                self.has_unnecessary_ops = True
+                self._count_unnecessary("pa")
         elif op == "pb":
             if len(self.stack_a) >= 1:
                 self.stack_b.appendleft(self.stack_a.popleft())
             else:
-                self.has_unnecessary_ops = True
+                self._count_unnecessary("pb")
         elif op == "ra":
             if len(self.stack_a) >= 2:
                 self.stack_a.append(self.stack_a.popleft())
             else:
-                self.has_unnecessary_ops = True
+                self._count_unnecessary("ra")
         elif op == "rb":
             if len(self.stack_b) >= 2:
                 self.stack_b.append(self.stack_b.popleft())
             else:
-                self.has_unnecessary_ops = True
+                self._count_unnecessary("rb")
         elif op == "rr":
-            self.exec_op("ra"); self.exec_op("rb")
+            if len(self.stack_a) >= 2 or len(self.stack_b) >= 2:
+                if len(self.stack_a) >= 2:
+                    self.stack_a.append(self.stack_a.popleft())
+                if len(self.stack_b) >= 2:
+                    self.stack_b.append(self.stack_b.popleft())
+            else:
+                self._count_unnecessary("rr")
         elif op == "rra":
             if len(self.stack_a) >= 2:
                 self.stack_a.appendleft(self.stack_a.pop())
             else:
-                self.has_unnecessary_ops = True
+                self._count_unnecessary("rra")
         elif op == "rrb":
             if len(self.stack_b) >= 2:
                 self.stack_b.appendleft(self.stack_b.pop())
             else:
-                self.has_unnecessary_ops = True
+                self._count_unnecessary("rrb")
         elif op == "rrr":
-            self.exec_op("rra"); self.exec_op("rrb")
+            if len(self.stack_a) >= 2 or len(self.stack_b) >= 2:
+                if len(self.stack_a) >= 2:
+                    self.stack_a.appendleft(self.stack_a.pop())
+                if len(self.stack_b) >= 2:
+                    self.stack_b.appendleft(self.stack_b.pop())
+            else:
+                self._count_unnecessary("rrr")
         else:
-            return False;
-        return True;
-
+            return False
+        return True
+        
     def validate(self, ops_list):
         for op in ops_list:
             if not self.exec_op(op):
-                return False, False
+                return False, False, {}
 
         if len(self.stack_b) != 0:
-             return False, False
+             return False, False, {}
            
         lst = list(self.stack_a)
         is_sorted = all(lst[i] <= lst[i+1] for i in range(len(lst)-1))
-        return is_sorted, self.has_unnecessary_ops
+        return is_sorted, self.has_unnecessary_ops, self.unnecessary_ops
 
 # ==========================================
 # REPORT GENERATOR
@@ -245,7 +269,7 @@ def run_test_suite(executable, size, mode, reports_enabled=False):
                 
             op_count = len(ops)
             checker = PushSwapChecker(sequence)
-            is_sorted, has_warnings = checker.validate(ops)
+            is_sorted, has_warnings, unnecessary_counts = checker.validate(ops)
             
             if not is_sorted:
                 sys.stdout.write(f"{COLORS['RED']}!{COLORS['RESET']}")
@@ -288,7 +312,8 @@ def run_test_suite(executable, size, mode, reports_enabled=False):
                         "reason": "Unnecessary operations detected (e.g., sa/sb/pa/pb/rotate on insufficient elements).",
                         "ops": op_count,
                         "limit": THRESHOLDS[size]["pass"],
-                        "sequence": " ".join(str_seq)
+                        "sequence": " ".join(str_seq),
+                        "unnecessary_counts": unnecessary_counts
                     })
                 else:
                     sys.stdout.write(f"{COLORS['GREEN']}.{COLORS['RESET']}")
@@ -362,27 +387,41 @@ def print_failures(failures):
 def print_warnings(warnings):
     if not warnings:
         return
-        
+
+    # Accumulate unnecessary op counts per (size, mode) across all runs
+    accumulated_counts = {}
+    for w in warnings:
+        key = (w['size'], w['mode'])
+        if key not in accumulated_counts:
+            accumulated_counts[key] = {}
+        counts = w.get('unnecessary_counts', {})
+        for op, count in counts.items():
+            accumulated_counts[key][op] = accumulated_counts[key].get(op, 0) + count
+
     filtered_warnings = []
     seen = {}
-    
+
     # Filter warnings: max 1 per (size, mode)
     for w in warnings:
         key = (w['size'], w['mode'])
         if key not in seen:
             filtered_warnings.append(w)
             seen[key] = True
-            
+
     print("\n" + "="*80)
     print(f"{COLORS['YELLOW']}{COLORS['BOLD']}WARNING REPORT {COLORS['RESET']}")
     print("="*80)
-    
+
     for idx, w in enumerate(filtered_warnings):
+        key = (w['size'], w['mode'])
+        counts = accumulated_counts.get(key, {})
+        counts_str = ", ".join(f"{op}={count}" for op, count in sorted(counts.items())) if counts else "N/A"
+
         print(f"\n{COLORS['YELLOW']}--- Warning {idx + 1} ---{COLORS['RESET']}")
         print(f"Size       : {w['size']}")
         print(f"Mode       : {w['mode'].upper()}")
         print(f"Disorder   : {w['disorder']:.2f}%")
-        print(f"Reason     : {COLORS['YELLOW']}{w['reason']}{COLORS['RESET']}")
+        print(f"Unnecessary: {COLORS['YELLOW']}{counts_str}{COLORS['RESET']}")
         print(f"Operations : {w['ops']} / Limit: {w['limit']}")
         print("-" * 80)
 

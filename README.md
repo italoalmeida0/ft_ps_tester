@@ -4,8 +4,8 @@ A Python-based tester for the **42 push_swap** project. It generates controlled 
 
 ---
 
-<img src="i1.jpeg" width="500">
-<img src="i2.jpeg" width="500">
+<img src="https://raw.githubusercontent.com/italoalmeida0/ft_ps_tester/main/i1.jpeg" width="500">
+<img src="https://raw.githubusercontent.com/italoalmeida0/ft_ps_tester/main/i2.jpeg" width="500">
 
 ---
 
