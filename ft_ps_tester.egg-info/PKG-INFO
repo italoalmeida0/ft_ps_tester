@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: ft_ps_tester
-Version: 1.0.6
+Version: 1.0.7
 Summary: A Python tester for the 42 push_swap project with controlled disorder generation and performance grading.
 Author: Italo Almeida
 License: MIT
@@ -43,6 +43,7 @@ A Python-based tester for the **42 push_swap** project. It generates controlled 
 - **Performance grading** — compares operation counts against 42 thresholds (excellent / good / pass / fail).
 - **Failure report** — concise summary of timeouts, invalid operations, and limit exceedances.
 - **Big-O complexity analysis** (`--big-o`) — measures algorithmic scaling across progressively larger inputs with per-mode expectations.
+- **Basic & edge-case tests** (`--basic`) — small-N operation counts, reversed/sorted inputs, error handling, split-argument support, and per-mode specialization checks.
 
 ---
 
@@ -308,6 +309,33 @@ ft_ps_tester --reports ./push_swap 500 complex
 
 ---
 
+### Basic & edge-case tests (`--basic`)
+
+Run a fast suite of correctness and edge-case checks. These also run **first**, automatically, at the start of every full test suite.
+
+```bash
+ft_ps_tester --basic ./push_swap
+```
+
+The suite covers six areas:
+
+| # | Test                    | What it checks                                                                                       |
+| - | ----------------------- | --------------------------------------------------------------------------------------------------- |
+| 1 | Small-N op counts       | Every permutation of **3** and **5** numbers across all modes (N=3 ≤3 `GOOD` / ≤5 `PASS`; N=5 ≤12 `GOOD` / ≤15 `PASS`). |
+| 2 | Reversed input          | Fully reversed (100% disorder) sequences of **3, 5, 10, 50, 100, 500** must sort correctly.          |
+| 3 | Sorted → 0 ops          | Already-sorted **1, 2, 3, 5, 10, 50, 100, 500** must output **0 operations** (and no error).          |
+| 4 | Nearly-sorted (1 swap)  | **10** elements with a single adjacent swap — last↔penultimate and first↔second — must sort correctly. |
+| 5 | Error handling          | Invalid input (`1a`, `1.0`, `6-1`, lone `-`/`+`, `+0`/`-0` duplicate, empty arg in the middle `3 2 "" 1 4 5`, `> INT_MAX`, LONG overflow, duplicates…) → exactly `Error\n` on **fd2**; valid edges (`INT_MIN`, `+0`) accepted; no args → no output. |
+| 6 | Split / multi-number args | Whether `1 2 "3 4" 5` and `"1 2 3 4 5"` are accepted (a **warning**, not a failure, if not).        |
+| 7 | Mode specialization     | The matching `--<mode>` should use the fewest ops per number type (10% margin); **identical counts across all modes → invalid** (flags not differentiated). |
+| 8 | Default flag (adaptive) | Running with **no flag** must sort and match `--adaptive` behavior.                                  |
+| 9 | Benchmark mode (`--bench`) | `fd1` still sorts; the `fd2` report names the strategy and reports the disorder % accurately for random sequences (0–100%, checked against the inversion count). |
+| 10 | Memory & crashes       | Runs `valgrind` (Linux) / `leaks` (macOS) on valid, sorted, error and no-arg inputs; flags leaks, memory errors and segfaults. Skipped if the tool is unavailable. |
+
+> **File descriptors:** `fd1` (stdout) carries the operations. `fd2` (stderr) carries exactly `Error\n` on invalid input, and the `--bench` report when benchmark mode is used. An error is detected only when `fd2` is exactly `Error\n` and `fd1` is empty.
+
+---
+
 ### Big-O Complexity Analysis (`--big-o`)
 
 Run a dedicated complexity analysis that measures how your algorithm scales with input size. This mode runs **100 tests per size per mode** across progressively larger sequences:
@@ -442,8 +470,12 @@ Your `push_swap` must support the following flags (passed as `--<mode>` before t
 
 | Size | Excellent | Good   | Pass    |
 | ---- | --------- | ------ | ------- |
+| 3    | —         | ≤ 3    | ≤ 5     |
+| 5    | —         | ≤ 12   | ≤ 15    |
 | 100  | < 700     | < 1500 | ≤ 2000  |
 | 500  | < 5500    | < 8000 | ≤ 12000 |
+
+> Sizes **3** and **5** are graded by the `--basic` suite (`GOOD` / `PASS` only); sizes **100** and **500** by the full performance suite.
 
 Results are shown with color-coded grades:
 

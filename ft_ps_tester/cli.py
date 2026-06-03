@@ -7,6 +7,10 @@ import subprocess
 import glob
 import time
 import math
+import re
+import shutil
+import signal
+from itertools import permutations
 from collections import deque
 
 # ==========================================
@@ -746,6 +750,717 @@ def run_bigo_analysis(executable):
     return all_results
 
 # ==========================================
+# BASIC & EDGE-CASE TESTS
+# ==========================================
+INT_MAX = 2147483647
+INT_MIN = -2147483648
+
+BASIC_MODES = ["simple", "medium", "complex", "adaptive"]
+
+# (good, pass) operation-count thresholds for small N (42 small sorts).
+SMALL_THRESHOLDS = {
+    3: {"good": 3,  "pass": 5},
+    5: {"good": 12, "pass": 15},
+}
+
+# A non-matching mode must beat the matching mode by MORE than this fraction
+# to be flagged. This is the "tolerable error margin" for mode specialization.
+MODE_COMPARISON_MARGIN = 0.10
+
+
+def _visible_len(s):
+    """Length of a string ignoring ANSI color codes."""
+    return len(re.sub(r'\x1b\[[0-9;]*m', '', s))
+
+
+def _pad(s, width):
+    """Right-pad a (possibly colored) string to a visible width."""
+    return s + ' ' * max(0, width - _visible_len(s))
+
+
+def _shellify(argv):
+    """Render an argv list the way it would be typed in a shell."""
+    return " ".join(f'"{a}"' if (a == "" or " " in a) else a for a in argv)
+
+
+def _disorder_pct(nums):
+    """Disorder % = inversions / max-inversions * 100 (same model as generate_sequence)."""
+    n = len(nums)
+    if n < 2:
+        return 0.0
+    inv = sum(1 for i in range(n) for j in range(i + 1, n) if nums[i] > nums[j])
+    return inv / (n * (n - 1) / 2.0) * 100.0
+
+
+def _run_ps(executable, str_args, mode=None, timeout=10):
+    """Run push_swap with an optional --mode flag. Returns CompletedProcess or None on timeout."""
+    cmd = [executable]
+    if mode:
+        cmd.append(f"--{mode}")
+    cmd += str_args
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def _exec_and_check(executable, seq, mode=None, timeout=10):
+    """Run push_swap on a VALID integer sequence and analyse the result."""
+    res = _run_ps(executable, [str(x) for x in seq], mode, timeout)
+    if res is None:
+        return {"timeout": True, "errored": False, "ops": [], "op_count": 0,
+                "is_sorted": False, "has_warn": False}
+    # fd1 (stdout) carries the operations; fd2 (stderr) carries "Error" on
+    # invalid input (and the benchmark report only when --bench is used).
+    errored = "Error" in res.stderr
+    ops = res.stdout.split()
+    is_sorted, has_warn, _ = PushSwapChecker(list(seq)).validate(ops)
+    return {
+        "timeout": False,
+        "errored": errored,
+        "ops": ops,
+        "op_count": len(ops),
+        "is_sorted": is_sorted and not errored,
+        "has_warn": has_warn,
+    }
+
+
+def _grade_small(n, ops):
+    t = SMALL_THRESHOLDS.get(n)
+    if t is None:
+        return ("--", COLORS["CYAN"])
+    if ops <= t["good"]:
+        return ("GOOD", COLORS["GREEN"])
+    if ops <= t["pass"]:
+        return ("PASS", COLORS["YELLOW"])
+    return ("FAIL", COLORS["RED"])
+
+
+def _grade_any(n, ops):
+    """Grade an op count by size, using whichever threshold table applies."""
+    if n in SMALL_THRESHOLDS:
+        return _grade_small(n, ops)
+    if n in THRESHOLDS:
+        return get_grade_info(n, ops)
+    return ("--", COLORS["CYAN"])
+
+
+def _ok_cell(passed, ok_text="OK", bad_text="FAIL"):
+    color = COLORS["GREEN"] if passed else COLORS["RED"]
+    return f"{color}{ok_text if passed else bad_text}{COLORS['RESET']}"
+
+
+def test_small_n(executable):
+    """[1/10] Exhaustive op-count check for N=3 and N=5 across every permutation."""
+    print(f"\n{COLORS['BOLD']}>> [1/10] Small-N operation counts (exhaustive permutations){COLORS['RESET']}")
+    print(f"   N=3: GOOD<={SMALL_THRESHOLDS[3]['good']}, PASS<={SMALL_THRESHOLDS[3]['pass']}    "
+          f"N=5: GOOD<={SMALL_THRESHOLDS[5]['good']}, PASS<={SMALL_THRESHOLDS[5]['pass']}")
+    print("   " + _pad("N", 4) + "| " + _pad("MODE", 9) + "| " + _pad("MAX OPS", 8)
+          + "| " + _pad("GRADE", 7) + "| " + _pad("SORTED", 9) + "| PERMS")
+    print("   " + "-" * 52)
+
+    fails = 0
+    for n in (3, 5):
+        perms = list(permutations(range(1, n + 1)))
+        for mode in BASIC_MODES:
+            max_ops = 0
+            bad = 0
+            for perm in perms:
+                r = _exec_and_check(executable, perm, mode)
+                if r["timeout"] or not r["is_sorted"]:
+                    bad += 1
+                    continue
+                max_ops = max(max_ops, r["op_count"])
+            grade, color = _grade_small(n, max_ops)
+            sort_ok = (bad == 0)
+            if grade == "FAIL" or not sort_ok:
+                fails += 1
+            row = "   " + _pad(str(n), 4) + "| " + _pad(mode, 9) + "| " + _pad(str(max_ops), 8) + "| "
+            row += _pad(f"{color}{grade}{COLORS['RESET']}", 7) + "| "
+            row += _pad(_ok_cell(sort_ok, "OK", f"{bad} BAD"), 9) + "| " + str(len(perms))
+            print(row)
+    return fails
+
+
+def test_reversed(executable):
+    """[2/10] Fully reversed input (100% disorder) for a range of sizes."""
+    print(f"\n{COLORS['BOLD']}>> [2/10] Reversed input — 100% disorder (worst case){COLORS['RESET']}")
+    print("   " + _pad("N", 5) + "| " + _pad("MODE", 9) + "| " + _pad("OPS", 8)
+          + "| " + _pad("GRADE", 11) + "| SORTED")
+    print("   " + "-" * 48)
+
+    fails = 0
+    for n in [3, 5, 10, 50, 100, 500]:
+        seq = list(range(n, 0, -1))  # n, n-1, ..., 1  -> fully inverse
+        for mode in BASIC_MODES:
+            r = _exec_and_check(executable, seq, mode, timeout=20)
+            grade, color = _grade_any(n, r["op_count"])
+            sort_ok = (not r["timeout"]) and r["is_sorted"]
+            if not sort_ok or grade == "FAIL":
+                fails += 1
+            ops_txt = "TIMEOUT" if r["timeout"] else str(r["op_count"])
+            row = "   " + _pad(str(n), 5) + "| " + _pad(mode, 9) + "| " + _pad(ops_txt, 8) + "| "
+            row += _pad(f"{color}{grade}{COLORS['RESET']}", 11) + "| "
+            row += _ok_cell(sort_ok)
+            print(row)
+    return fails
+
+
+def test_sorted(executable):
+    """[3/10] Already-sorted input must produce zero operations."""
+    print(f"\n{COLORS['BOLD']}>> [3/10] Already-sorted input — must output 0 operations{COLORS['RESET']}")
+    print(f"   {COLORS['CYAN']}Rule:{COLORS['RESET']} sorted input must produce 0 ops (empty output) and no Error.")
+    print("   " + _pad("N", 5) + "| " + _pad("MODE", 9) + "| " + _pad("OPS", 8)
+          + "| " + _pad("RESULT", 9) + "| DETAIL")
+    print("   " + "-" * 52)
+
+    fails = 0
+    for n in [1, 2, 3, 5, 10, 50, 100, 500]:
+        seq = list(range(1, n + 1))
+        for mode in BASIC_MODES:
+            r = _exec_and_check(executable, seq, mode, timeout=20)
+            passed = (not r["timeout"]) and (not r["errored"]) and r["op_count"] == 0 and r["is_sorted"]
+            if r["timeout"]:
+                detail = "timeout"
+            elif r["errored"]:
+                detail = "errored on valid input"
+            elif r["op_count"] > 0:
+                detail = f"{r['op_count']} ops (expected 0)"
+            elif not r["is_sorted"]:
+                detail = "not sorted"
+            else:
+                detail = ""
+            if not passed:
+                fails += 1
+            ops_txt = "TIMEOUT" if r["timeout"] else str(r["op_count"])
+            row = "   " + _pad(str(n), 5) + "| " + _pad(mode, 9) + "| " + _pad(ops_txt, 8) + "| "
+            row += _pad(_ok_cell(passed, "PASS", "FAIL"), 9) + "| " + detail
+            print(row)
+    return fails
+
+
+def test_nearly_sorted(executable):
+    """[4/10] Nearly-sorted input: a single adjacent swap at each boundary."""
+    print(f"\n{COLORS['BOLD']}>> [4/10] Nearly-sorted input — single adjacent swap (edge cases){COLORS['RESET']}")
+    print(f"   {COLORS['CYAN']}Note:{COLORS['RESET']} only one inversion; must sort correctly "
+          f"(0 ops here would mean it wrongly thinks the input is sorted).")
+    print("   " + _pad("CASE", 20) + "| " + _pad("INPUT", 24) + "| " + _pad("MODE", 9)
+          + "| " + _pad("OPS", 8) + "| " + _pad("SORTED", 9) + "| DETAIL")
+    print("   " + "-" * 80)
+
+    n = 10
+    base = list(range(1, n + 1))
+    cases = [
+        ("last two swapped",  base[:-2] + [base[-1], base[-2]]),   # 1..8, 10, 9
+        ("first two swapped", [base[1], base[0]] + base[2:]),      # 2, 1, 3..10
+    ]
+
+    fails = 0
+    for label, seq in cases:
+        seq_str = " ".join(str(x) for x in seq)
+        for mode in BASIC_MODES:
+            r = _exec_and_check(executable, seq, mode, timeout=20)
+            passed = (not r["timeout"]) and r["is_sorted"]
+            if r["timeout"]:
+                detail = "timeout"
+            elif r["errored"]:
+                detail = "errored on valid input"
+            elif not r["is_sorted"]:
+                detail = "not sorted (0 ops on unsorted input?)" if r["op_count"] == 0 else "not sorted"
+            else:
+                detail = ""
+            if not passed:
+                fails += 1
+            ops_txt = "TIMEOUT" if r["timeout"] else str(r["op_count"])
+            row = "   " + _pad(label, 20) + "| " + _pad(seq_str, 24) + "| " + _pad(mode, 9) + "| "
+            row += _pad(ops_txt, 8) + "| " + _pad(_ok_cell(passed), 9) + "| " + detail
+            print(row)
+    return fails
+
+
+def _parse_ints(argv):
+    """Parse argv tokens (whitespace-split) into ints; None if any token is invalid."""
+    out = []
+    for arg in argv:
+        for tok in arg.split():
+            if not re.fullmatch(r'[-+]?\d+', tok):
+                return None
+            out.append(int(tok))
+    return out
+
+
+def test_errors(executable):
+    """[5/10] Error management: invalid -> 'Error\\n' on fd2; valid edges accepted; no args -> nothing."""
+    print(f"\n{COLORS['BOLD']}>> [5/10] Error handling{COLORS['RESET']}")
+    print(f"   {COLORS['CYAN']}Rule:{COLORS['RESET']} invalid input -> exactly \"Error\\n\" on fd2 (nothing on fd1); "
+          f"valid edge inputs must sort; no args -> no output.")
+    print("   " + _pad("CASE", 30) + "| " + _pad("INPUT", 22) + "| " + _pad("RESULT", 9) + "| DETAIL")
+    print("   " + "-" * 80)
+
+    # expect: "error" | "valid" | "error_or_empty" | "empty"
+    cases = [
+        ('"1a" trailing char',         ["1", "2", "1a"],                  "error"),
+        ('"1.0" float',                ["1", "2.0", "3"],                 "error"),
+        ('"abc" non-numeric',          ["abc"],                           "error"),
+        ('lone "-"',                   ["4", "-", "3"],                   "error"),
+        ('lone "+"',                   ["4", "+", "3"],                   "error"),
+        ('"6-" malformed',             ["4", "6-", "3"],                  "error"),
+        ('"6-1" malformed',            ["4", "6-1", "3"],                 "error"),
+        ('"6+1" malformed',            ["4", "6+1", "3"],                 "error"),
+        ('> INT_MAX',                  [str(INT_MAX + 1)],                "error"),
+        ('< INT_MIN',                  [str(INT_MIN - 1)],                "error"),
+        ('LONG overflow',              ["9", "9223372036854775808"],      "error"),
+        ('duplicate value',            ["1", "2", "2", "3"],              "error"),
+        ('0 and +0 duplicate',         ["2", "22", "0", "+0"],            "error"),
+        ('0 and -0 duplicate',         ["2", "22", "0", "-0"],            "error"),
+        ('empty number in middle',     ["3", "2", "", "1", "4", "5"],     "error"),
+        ('empty arg ""',              [""],                              "error_or_empty"),
+        ('space arg " "',             [" "],                             "error_or_empty"),
+        ('INT_MAX & INT_MIN valid',    [str(INT_MAX), str(INT_MIN)],      "valid"),
+        ('"+0" valid (no dup)',        ["2", "22", "12", "+0"],           "valid"),
+        ('negatives valid',            ["9", "8", "7", "-6"],             "valid"),
+        ('no arguments -> no output',  [],                                "empty"),
+    ]
+
+    fails = 0
+    for label, argv, expect in cases:
+        res = _run_ps(executable, argv, None)
+        if res is None:
+            passed, detail = False, "timeout"
+        else:
+            errored = res.stderr.strip() == "Error" and res.stdout.strip() == ""
+            empty = res.stdout == "" and res.stderr == ""
+            if expect == "error":
+                passed = errored
+                detail = _error_detail(res, errored)
+            elif expect == "empty":
+                passed = empty
+                detail = ("no output (correct)" if passed
+                          else f"displayed: fd1={repr(res.stdout[:18])} fd2={repr(res.stderr[:18])}")
+            elif expect == "error_or_empty":
+                passed = errored or empty
+                detail = ("Error on fd2" if errored else "no output" if empty
+                          else "should Error or print nothing")
+            else:  # valid -> must be accepted and sort
+                ints = _parse_ints(argv)
+                sorted_ok = (ints is not None and "Error" not in res.stderr
+                             and PushSwapChecker(ints).validate(res.stdout.split())[0])
+                passed = sorted_ok
+                detail = ("accepted & sorted" if passed
+                          else "wrongly rejected (Error)" if "Error" in res.stderr
+                          else "did not sort correctly")
+        if not passed:
+            fails += 1
+        row = "   " + _pad(label, 30) + "| " + _pad(_shellify(argv) or "(none)", 22) + "| "
+        row += _pad(_ok_cell(passed, "PASS", "FAIL"), 9) + "| " + detail
+        print(row)
+    return fails
+
+
+def _error_detail(res, errored):
+    if errored:
+        return "Error on fd2" + ("" if res.stderr == "Error\n" else " (not exactly 'Error\\n')")
+    if res.stderr.strip() == "" and res.stdout.strip() == "":
+        return "no Error printed (invalid input accepted?)"
+    if "Error" in res.stdout and res.stderr.strip() != "Error":
+        return "Error is on fd1 (stdout) — must be on fd2 (stderr)"
+    if res.stderr.strip() != "Error":
+        return "fd2 not exactly Error: " + repr(res.stderr.strip()[:40])
+    return "fd1 should be empty, got: " + repr(res.stdout.strip()[:30])
+
+
+def test_split(executable):
+    """[6/10] Multi-number argument support (optional but recommended)."""
+    print(f"\n{COLORS['BOLD']}>> [6/10] Argument parsing — split / multi-number args{COLORS['RESET']}")
+    print("   " + _pad("FORM", 18) + "| " + _pad("EXAMPLE", 22) + "| " + _pad("RESULT", 24) + "| DETAIL")
+    print("   " + "-" * 78)
+
+    forms = [
+        ("separate args",  ["1", "2", "3", "4", "5"],          [1, 2, 3, 4, 5],       True),
+        ("single arg",     ["1 2 3 4 5"],                       [1, 2, 3, 4, 5],       False),
+        ("mixed / split",  ["1", "2", "3 4", "5", "6 7"],       [1, 2, 3, 4, 5, 6, 7], False),
+    ]
+
+    fails = 0
+    warns = 0
+    for label, argv, expected, mandatory in forms:
+        res = _run_ps(executable, argv, None)
+        if res is None:
+            accepted, note = False, "timeout"
+        else:
+            if "Error" in res.stderr:  # "Error" goes to fd2 (stderr)
+                accepted, note = False, "returned Error"
+            else:
+                ops = res.stdout.split()
+                is_sorted, _, _ = PushSwapChecker(list(expected)).validate(ops)
+                accepted = is_sorted
+                note = "sorted OK" if is_sorted else "did not sort correctly"
+
+        if accepted:
+            status = f"{COLORS['GREEN']}ACCEPTED{COLORS['RESET']}"
+        elif mandatory:
+            status = f"{COLORS['RED']}FAIL (mandatory){COLORS['RESET']}"
+            fails += 1
+        else:
+            status = f"{COLORS['YELLOW']}NOT ACCEPTED (warning){COLORS['RESET']}"
+            warns += 1
+        row = "   " + _pad(label, 18) + "| " + _pad(_shellify(argv), 22) + "| " + _pad(status, 24) + "| " + note
+        print(row)
+
+    if warns:
+        print(f"\n   {COLORS['YELLOW']}Warning:{COLORS['RESET']} multi-number arguments "
+              f"(e.g. {COLORS['BOLD']}1 2 \"3 4\" 5{COLORS['RESET']}) were not accepted.")
+        print(f"   This is {COLORS['BOLD']}not mandatory{COLORS['RESET']} for the 42 subject, "
+              f"but supporting it is recommended.")
+    return fails, warns
+
+
+def test_mode_specialization(executable):
+    """[7/10] Each mode should produce the fewest ops on its own number type."""
+    print(f"\n{COLORS['BOLD']}>> [7/10] Mode specialization — each mode should win on its own number type{COLORS['RESET']}")
+    print(f"   {COLORS['CYAN']}Idea:{COLORS['RESET']} on '<type>' numbers, --<type> should use the fewest ops "
+          f"(tolerance {int(MODE_COMPARISON_MARGIN * 100)}%).")
+
+    size = 100
+    samples = 20
+    types = ["simple", "medium", "complex"]
+    cmp_modes = ["simple", "medium", "complex", "adaptive"]
+
+    table = {}
+    for t in types:
+        lo, hi = MODES[t]
+        seqs = [generate_sequence(size, random.uniform(lo, hi)) for _ in range(samples)]
+        row = {}
+        for m in cmp_modes:
+            tot, cnt = 0, 0
+            for seq in seqs:
+                r = _exec_and_check(executable, seq, m, timeout=20)
+                if r["timeout"] or not r["is_sorted"]:
+                    continue
+                tot += r["op_count"]
+                cnt += 1
+            row[m] = (tot / cnt) if cnt else None
+        table[t] = row
+
+    header = "   " + _pad("NUMBERS \\ MODE", 16) + "| "
+    for m in cmp_modes:
+        header += _pad(m, 10) + "| "
+    print(header)
+    print("   " + "-" * (18 + 12 * len(cmp_modes)))
+
+    warns = 0
+    warn_msgs = []
+    identical_rows = 0
+    for t in types:
+        row = table[t]
+        cand = {m: row[m] for m in types if row[m] is not None}
+        best_mode = min(cand, key=cand.get) if cand else None
+        vals = [row[m] for m in cmp_modes if row[m] is not None]
+        identical = len(vals) >= 2 and (max(vals) - min(vals) < 0.5)
+        if identical:
+            identical_rows += 1
+        line = "   " + _pad(f"{t} numbers", 16) + "| "
+        for m in cmp_modes:
+            v = row[m]
+            cell = "--" if v is None else f"{v:.0f}"
+            if identical:
+                cell = f"{COLORS['RED']}{cell}{COLORS['RESET']}"
+            elif m == t:
+                cell = f"{COLORS['CYAN']}{cell}*{COLORS['RESET']}"
+            elif best_mode == m and m in types:
+                cell = f"{COLORS['GREEN']}{cell}{COLORS['RESET']}"
+            line += _pad(cell, 10) + "| "
+        print(line)
+
+        expected = row.get(t)
+        if expected is not None and not identical:
+            for m in types:
+                if m == t:
+                    continue
+                v = row[m]
+                if v is not None and v < expected * (1 - MODE_COMPARISON_MARGIN):
+                    warns += 1
+                    warn_msgs.append((t, m, expected, v))
+
+    print(f"   {COLORS['CYAN']}*{COLORS['RESET']} = matching mode (expected best for that number type)")
+
+    # If every number type yields identical op counts across modes, the strategy
+    # flags are not differentiated at all -> invalid.
+    fails = 0
+    if identical_rows == len(types):
+        fails = 1
+        print(f"   {COLORS['RED']}{COLORS['BOLD']}INVALID:{COLORS['RESET']} all strategies produce "
+              f"identical operation counts — the --simple/--medium/--complex flags are not "
+              f"differentiated (each mode must run a different algorithm).")
+    elif identical_rows:
+        print(f"   {COLORS['YELLOW']}Note:{COLORS['RESET']} {identical_rows} of {len(types)} number "
+              f"types showed identical op counts across modes.")
+        warns += identical_rows
+
+    for (t, m, exp, v) in warn_msgs:
+        print(f"   {COLORS['YELLOW']}Warning:{COLORS['RESET']} on {t} numbers, --{m} used {v:.0f} ops "
+              f"vs --{t} {exp:.0f} (>{int(MODE_COMPARISON_MARGIN * 100)}% better). "
+              f"--{t} should specialize best for {t} inputs.")
+    return fails, warns
+
+
+def test_default_flag(executable):
+    """[8/10] Running with no strategy flag should behave like --adaptive."""
+    print(f"\n{COLORS['BOLD']}>> [8/10] Default strategy — no flag should behave like --adaptive{COLORS['RESET']}")
+    print(f"   {COLORS['CYAN']}Rule:{COLORS['RESET']} running with no flag must sort, and should match --adaptive.")
+    print("   " + _pad("INPUT", 22) + "| " + _pad("NO-FLAG OPS", 12) + "| " + _pad("ADAPTIVE OPS", 13)
+          + "| " + _pad("SORTS", 8) + "| MATCHES ADAPTIVE")
+    print("   " + "-" * 78)
+
+    cases = [[5, 4, 3, 2, 1], [2, 1, 0], [1, 5, 2, 4, 3]]
+    fails = 0
+    warns = 0
+    for seq in cases:
+        r_none = _exec_and_check(executable, seq, None)
+        r_adap = _exec_and_check(executable, seq, "adaptive")
+        sorts = (not r_none["timeout"]) and r_none["is_sorted"]
+        adap_ok = (not r_adap["timeout"]) and r_adap["is_sorted"]
+        match = sorts and adap_ok and r_none["op_count"] == r_adap["op_count"]
+        if not sorts:
+            fails += 1
+        elif not match:
+            warns += 1
+        none_ops = "TIMEOUT" if r_none["timeout"] else str(r_none["op_count"])
+        adap_ops = "TIMEOUT" if r_adap["timeout"] else str(r_adap["op_count"])
+        match_cell = _ok_cell(match, "yes", "differs") if sorts else f"{COLORS['CYAN']}n/a{COLORS['RESET']}"
+        row = "   " + _pad(" ".join(map(str, seq)), 22) + "| " + _pad(none_ops, 12) + "| "
+        row += _pad(adap_ops, 13) + "| " + _pad(_ok_cell(sorts), 8) + "| " + match_cell
+        print(row)
+    if warns:
+        print(f"\n   {COLORS['YELLOW']}Note:{COLORS['RESET']} no-flag op counts differ from --adaptive; "
+              f"it sorts, but may not default to the adaptive strategy.")
+    return fails, warns
+
+
+def test_bench(executable):
+    """[9/10] Benchmark mode (--bench): fd1 = ops, fd2 = report (strategy + disorder %)."""
+    print(f"\n{COLORS['BOLD']}>> [9/10] Benchmark mode (--bench){COLORS['RESET']}")
+    print(f"   {COLORS['CYAN']}Optional:{COLORS['RESET']} fd1 must still sort; the fd2 report should name the "
+          f"strategy and show the disorder %.")
+    print("   " + _pad("RUN", 27) + "| " + _pad("FD1 SORTS", 10) + "| " + _pad("STRATEGY", 12)
+          + "| " + _pad("DISORDER", 18) + "| RESULT")
+    print("   " + "-" * 84)
+
+    def pcts(text):
+        return [float(x) for x in re.findall(r'(\d+(?:\.\d+)?)\s*%', text)]
+
+    warns = 0
+
+    # Per mode on reversed input -> strategy must be named, disorder ~100%.
+    rev = [5, 4, 3, 2, 1]
+    for mode in BASIC_MODES:
+        res = _run_ps(executable, ["--bench", f"--{mode}"] + [str(x) for x in rev], None, timeout=15)
+        if res is None:
+            warns += 1
+            print("   " + _pad(f"--bench --{mode} (rev)", 27) + "| " + _pad("--", 10) + "| "
+                  + _pad("--", 12) + "| " + _pad("--", 18) + f"| {COLORS['YELLOW']}timeout{COLORS['RESET']}")
+            continue
+        bench = res.stderr.lower()
+        sorts = PushSwapChecker(list(rev)).validate(res.stdout.split())[0]
+        strat_ok = mode in bench
+        vals = pcts(bench)
+        dis_ok = any(p >= 99.0 for p in vals)
+        dis_txt = f"{max(vals):.2f}%" if vals else "none"
+        ok = sorts and strat_ok and dis_ok
+        if not ok:
+            warns += 1
+        result = f"{COLORS['GREEN']}OK{COLORS['RESET']}" if ok else f"{COLORS['YELLOW']}check{COLORS['RESET']}"
+        row = "   " + _pad(f"--bench --{mode} (rev)", 27) + "| " + _pad(_ok_cell(sorts), 10) + "| "
+        row += _pad(_ok_cell(strat_ok, mode, "missing"), 12) + "| "
+        row += _pad(_ok_cell(dis_ok, dis_txt, dis_txt + " !~100"), 18) + "| " + result
+        print(row)
+
+    # Disorder accuracy: random sequences (0..100%) -> bench % must match the
+    # disorder we compute ourselves (same inversion model as generate_sequence).
+    print(f"   {COLORS['CYAN']}disorder accuracy{COLORS['RESET']} (random sizes; expected vs reported):")
+    print("   " + _pad("INPUT", 27) + "| " + _pad("SIZE", 6) + "| " + _pad("EXPECTED", 12)
+          + "| " + _pad("BENCH %", 18) + "| RESULT")
+    print("   " + "-" * 74)
+    dis_cases = [random.sample(range(-100000, 100000), s) for s in [5, 5, 5, 10, 20, 100]]
+    dis_cases.append([1, 2, 3, 4, 5])      # 0%
+    dis_cases.append([5, 4, 3, 2, 1])      # 100%
+    for seq in dis_cases:
+        expected = _disorder_pct(seq)
+        res = _run_ps(executable, ["--bench", "--adaptive"] + [str(x) for x in seq], None, timeout=20)
+        if res is None:
+            ok, got = False, "timeout"
+        else:
+            vals = pcts(res.stderr.lower())
+            if vals:
+                closest = min(vals, key=lambda p: abs(p - expected))
+                ok = abs(closest - expected) <= 1.0
+                got = f"{closest:.2f}%"
+            else:
+                ok, got = False, "none"
+        if not ok:
+            warns += 1
+        result = f"{COLORS['GREEN']}OK{COLORS['RESET']}" if ok else f"{COLORS['YELLOW']}check{COLORS['RESET']}"
+        row = "   " + _pad(f"{len(seq)} random nums", 27) + "| " + _pad(str(len(seq)), 6) + "| "
+        row += _pad(f"{expected:.2f}%", 12) + "| " + _pad(_ok_cell(ok, got, got + " !=exp"), 18) + "| " + result
+        print(row)
+
+    if warns:
+        print(f"\n   {COLORS['YELLOW']}Note:{COLORS['RESET']} --bench is optional (not a failing requirement), "
+              f"but its fd2 report should name the strategy and report the disorder accurately (0..100%).")
+    return warns
+
+
+def _run_memcheck(executable, argv, timeout=30):
+    """Crash detection (direct run) + leak/error check (valgrind/leaks)."""
+    r = {"segfault": False, "mem_ok": False, "leaked": 0, "errors": 0,
+         "tool": None, "timeout": False}
+
+    # 1) Direct run -> reliable crash detection, independent of valgrind.
+    try:
+        d = subprocess.run([executable] + argv, capture_output=True, text=True, timeout=10)
+        r["segfault"] = (d.returncode == -signal.SIGSEGV) or ("Segmentation fault" in (d.stdout + d.stderr))
+    except subprocess.TimeoutExpired:
+        r["timeout"] = True
+
+    # 2) Memory tool (optional; only trusted when it actually produced a report).
+    if shutil.which("valgrind"):
+        r["tool"], cmd = "valgrind", ["valgrind", "--leak-check=full", executable] + argv
+    elif shutil.which("leaks"):
+        r["tool"], cmd = "leaks", ["leaks", "--atExit", "--", executable] + argv
+    else:
+        return r
+
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        r["timeout"] = True
+        return r
+
+    out = res.stdout + res.stderr
+    if "SIGSEGV" in out or "Segmentation fault" in out:
+        r["segfault"] = True
+    if r["tool"] == "valgrind":
+        if "ERROR SUMMARY" in out:  # valgrind actually ran (else: setup error)
+            r["mem_ok"] = True
+            for pat in (r"definitely lost: ([\d,]+) bytes", r"indirectly lost: ([\d,]+) bytes"):
+                m = re.search(pat, out)
+                if m:
+                    r["leaked"] += int(m.group(1).replace(",", ""))
+            m = re.search(r"ERROR SUMMARY: (\d+) errors", out)
+            if m:
+                r["errors"] = int(m.group(1))
+    else:
+        m = re.search(r"(\d+) total leaked bytes", out)
+        if m:
+            r["mem_ok"] = True
+            r["leaked"] = int(m.group(1))
+    return r
+
+
+def test_memory(executable):
+    """[10/10] Memory leaks (valgrind / leaks) and crashes on representative inputs."""
+    print(f"\n{COLORS['BOLD']}>> [10/10] Memory & crashes (valgrind / leaks){COLORS['RESET']}")
+    if not (shutil.which("valgrind") or shutil.which("leaks")):
+        print(f"   {COLORS['YELLOW']}Skipped:{COLORS['RESET']} neither 'valgrind' nor 'leaks' found on PATH.")
+        return 0
+
+    cases = [
+        ("valid 5",        [str(x) for x in random.sample(range(-1000, 1000), 5)]),
+        ("valid 100",      [str(x) for x in random.sample(range(-100000, 100000), 100)]),
+        ("already sorted", ["0", "1", "2", "3", "4"]),
+        ("error (dup)",    ["1", "2", "2"]),
+        ("no args",        []),
+    ]
+
+    print("   " + _pad("CASE", 16) + "| " + _pad("TOOL", 9) + "| " + _pad("LEAKED", 14)
+          + "| " + _pad("MEM ERRORS", 12) + "| " + _pad("CRASH", 8) + "| RESULT")
+    print("   " + "-" * 78)
+
+    fails = 0
+    any_mem_ok = False
+    na = f"{COLORS['CYAN']}n/a{COLORS['RESET']}"
+    for label, argv in cases:
+        r = _run_memcheck(executable, argv)
+        if r["timeout"]:
+            print("   " + _pad(label, 16) + "| " + _pad(r["tool"] or "--", 9) + "| " + _pad("--", 14)
+                  + "| " + _pad("--", 12) + "| " + _pad("--", 8) + f"| {COLORS['YELLOW']}timeout{COLORS['RESET']}")
+            continue
+        seg, memok, leaked, errors = r["segfault"], r["mem_ok"], r["leaked"], r["errors"]
+        any_mem_ok = any_mem_ok or memok
+        bad = seg or (memok and (leaked > 0 or errors > 0))
+        if bad:
+            fails += 1
+        if bad:
+            result = f"{COLORS['RED']}FAIL{COLORS['RESET']}"
+        elif memok:
+            result = f"{COLORS['GREEN']}OK{COLORS['RESET']}"
+        else:
+            result = f"{COLORS['YELLOW']}no crash (leaks n/a){COLORS['RESET']}"
+        leak_cell = _ok_cell(leaked == 0, "0 B", f"{leaked} B") if memok else na
+        err_cell = _ok_cell(errors == 0, "0", str(errors)) if memok else na
+        row = "   " + _pad(label, 16) + "| " + _pad(r["tool"] or "--", 9) + "| " + _pad(leak_cell, 14) + "| "
+        row += _pad(err_cell, 12) + "| " + _pad(_ok_cell(not seg, "no", "SEGV"), 8) + "| " + result
+        print(row)
+
+    if not any_mem_ok:
+        print(f"   {COLORS['YELLOW']}Note:{COLORS['RESET']} the memory tool could not produce a report "
+              f"(broken/!installed); only crash detection was performed.")
+    return fails
+
+
+def run_basic_tests(executable):
+    """Run all basic / edge-case tests and print a consolidated summary."""
+    print(f"\n{COLORS['BOLD']}{'=' * 80}")
+    print(f"  BASIC & EDGE-CASE TESTS")
+    print(f"{'=' * 80}{COLORS['RESET']}")
+
+    f_small = test_small_n(executable)
+    f_rev = test_reversed(executable)
+    f_sort = test_sorted(executable)
+    f_near = test_nearly_sorted(executable)
+    f_err = test_errors(executable)
+    f_split, w_split = test_split(executable)
+    f_mode, w_mode = test_mode_specialization(executable)
+    f_default, w_default = test_default_flag(executable)
+    w_bench = test_bench(executable)
+    f_mem = test_memory(executable)
+
+    total_fails = f_small + f_rev + f_sort + f_near + f_err + f_split + f_mode + f_default + f_mem
+    total_warns = w_split + w_mode + w_default + w_bench
+
+    print(f"\n{COLORS['BOLD']}{'=' * 80}")
+    print(f"  BASICS SUMMARY")
+    print(f"{'=' * 80}{COLORS['RESET']}")
+
+    def line(label, fails, warns=0):
+        if fails > 0:
+            tag = f"{COLORS['RED']}FAIL ({fails}){COLORS['RESET']}"
+        elif warns > 0:
+            tag = f"{COLORS['YELLOW']}WARN ({warns}){COLORS['RESET']}"
+        else:
+            tag = f"{COLORS['GREEN']}PASS{COLORS['RESET']}"
+        print("  " + _pad(label, 28) + ": " + tag)
+
+    line("Small-N op counts (3,5)", f_small)
+    line("Reversed input", f_rev)
+    line("Sorted -> 0 ops", f_sort)
+    line("Nearly-sorted (1 swap)", f_near)
+    line("Error handling", f_err)
+    line("Split / multi-number args", 0, w_split)
+    line("Mode specialization", f_mode, w_mode)
+    line("Default flag (adaptive)", f_default, w_default)
+    line("Benchmark mode (--bench)", 0, w_bench)
+    line("Memory & crashes", f_mem)
+    print("  " + "-" * 40)
+    overall = (f"{COLORS['GREEN']}ALL BASIC TESTS PASSED{COLORS['RESET']}" if total_fails == 0
+               else f"{COLORS['RED']}{total_fails} BASIC FAILURE(S){COLORS['RESET']}")
+    if total_warns:
+        overall += f"   {COLORS['YELLOW']}({total_warns} warning(s)){COLORS['RESET']}"
+    print("  " + overall)
+    return total_fails, total_warns
+
+
+# ==========================================
 # MAIN ENTRY
 # ==========================================
 def main():
@@ -760,11 +1475,17 @@ def main():
     if '--big-o' in args:
         bigo_mode = True
         args = [a for a in args if a != '--big-o']
-    
+
+    basic_only = False
+    if '--basic' in args:
+        basic_only = True
+        args = [a for a in args if a != '--basic']
+
     if len(args) < 1 or len(args) > 3:
         print(f"Usage:")
         print(f"  Full Test Suite : {sys.argv[0]} [--reports] <path_to_push_swap>")
         print(f"  Specific Test   : {sys.argv[0]} [--reports] <path_to_push_swap> <size> <mode>")
+        print(f"  Basic Tests     : {sys.argv[0]} --basic <path_to_push_swap>")
         print(f"  Big-O Analysis  : {sys.argv[0]} --big-o <path_to_push_swap>")
         sys.exit(1)
         
@@ -776,16 +1497,24 @@ def main():
     if bigo_mode:
         run_bigo_analysis(executable)
         sys.exit(0)
-        
+
+    if basic_only:
+        fails, _ = run_basic_tests(executable)
+        sys.exit(1 if fails else 0)
+
     all_failures = []
     all_warnings = []
     results = []
 
     if len(args) == 1:
         print(f"{COLORS['BOLD']}Running FULL TEST SUITE for {executable}{COLORS['RESET']}\n")
+
+        # Basic / edge-case tests run first, before the performance suite.
+        run_basic_tests(executable)
+
         sizes = [100, 500]
         modes = ["simple", "medium", "complex", "adaptive"]
-        
+
         for size in sizes:
             for mode in modes:
                 stats, fails, warns = run_test_suite(executable, size, mode, reports_enabled)
