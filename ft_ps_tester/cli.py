@@ -39,11 +39,33 @@ MODES = {
     "adaptive": (15.0, 55.0)
 }
 
+# 32-bit signed integer bounds.
+INT_MAX = 2147483647
+INT_MIN = -2147483648
+
+# Random-number generation range (inclusive lo, hi, label). The default spans the
+# full 32-bit signed range; --1m / --u1m narrow it. Mutated by main().
+NUMBER_RANGES = {
+    "intmax": (INT_MIN, INT_MAX, "INT_MIN..INT_MAX"),
+    "1m":     (-1_000_000, 1_000_000, "-1M..1M"),
+    "u1m":  (0, 1_000_000, "0..1M"),
+}
+GEN_RANGE = NUMBER_RANGES["intmax"]
+
+
+def compute_timeout(size):
+    """Per-call ./push_swap timeout (seconds), scaled by input size.
+
+    ~5s floor for small/basic inputs, ~10s at 500, ~15s at 800; capped at 30s.
+    """
+    return max(5.0, min(30.0, size / 60.0 + 1.67))
+
 # ==========================================
 # DATA GENERATOR
 # ==========================================
 def generate_sequence(size, target_disorder):
-    raw_sequence = random.sample(range(-1000000, 1000000), size)
+    lo, hi, _ = GEN_RANGE
+    raw_sequence = random.sample(range(lo, hi + 1), size)
     raw_sequence.sort()
 
     total_pairs = (size * (size - 1)) / 2.0
@@ -266,7 +288,7 @@ def run_test_suite(executable, size, mode, reports_enabled=False):
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=10
+                timeout=compute_timeout(size)
             )
             
             ops = result.stdout.strip().split()
@@ -555,7 +577,7 @@ def run_bigo_test(executable, mode):
                     capture_output=True,
                     text=True,
                     check=False,
-                    timeout=30
+                    timeout=compute_timeout(size)
                 )
             except subprocess.TimeoutExpired:
                 pass
@@ -573,7 +595,7 @@ def run_bigo_test(executable, mode):
                     capture_output=True,
                     text=True,
                     check=False,
-                    timeout=30
+                    timeout=compute_timeout(size)
                 )
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
 
@@ -663,6 +685,16 @@ def run_bigo_test(executable, mode):
     }
 
 def run_bigo_analysis(executable):
+    print(f"\n{COLORS['YELLOW']}{COLORS['BOLD']}{'='*80}")
+    print(f"  WARNING — INFORMATIONAL ONLY, DO NOT USE TO FAIL ANYONE")
+    print(f"{'='*80}{COLORS['RESET']}")
+    print(f"{COLORS['YELLOW']}  The subject defines the complexity MODEL (four strategies; complexity measured")
+    print(f"  in the NUMBER OF push_swap OPERATIONS generated — not time, not classical array")
+    print(f"  complexity), but it does NOT specify how to validate or test it (no sizes, thresholds")
+    print(f"  or method). Execution time below is shown for reference only and is NOT part of the")
+    print(f"  model — the Overall verdict uses operation count alone. A rough indicator, never a")
+    print(f"  pass/fail criterion for an evaluation.{COLORS['RESET']}")
+
     print(f"\n{COLORS['BOLD']}{'='*80}")
     print(f"  BIG-O COMPLEXITY ANALYSIS")
     print(f"{'='*80}{COLORS['RESET']}")
@@ -695,19 +727,19 @@ def run_bigo_analysis(executable):
     print(f"{COLORS['BOLD']}{'='*100}")
     print(f"  BIG-O SUMMARY")
     print(f"{'='*100}{COLORS['RESET']}")
-    print(f"\n{'Mode':<10} | {'Ops Big-O':<12} | {'Ops Status':<10} | {'Time Big-O':<12} | {'Time Status':<11} | {'Overall':<8} | {'Expected':<25}")
+    print(f"\n{'Mode':<10} | {'Ops Big-O':<12} | {'Ops Status':<10} | {'Time Big-O':<12} | {'Time (info)':<11} | {'Overall':<8} | {'Expected':<25}")
     print("-" * 115)
     for r in all_results:
         mode = r["mode"].upper()
         ops_comp = r["ops_complexity"]
         time_comp = r["time_complexity"]
         ops_ok, expected_desc = check_expectation(ops_comp, r["mode"])
-        time_ok, _ = check_expectation(time_comp, r["mode"])
 
+        # The subject's metric is OPERATION COUNT; time is informational only,
+        # so the Overall verdict is based on operations alone.
         ops_status_color = COLORS["GREEN"] if ops_ok else COLORS["RED"]
-        time_status_color = COLORS["GREEN"] if time_ok else COLORS["RED"]
-        overall_color = COLORS["GREEN"] if (ops_ok and time_ok) else COLORS["RED"]
-        overall_text = "PASS" if (ops_ok and time_ok) else "FAIL"
+        overall_color = COLORS["GREEN"] if ops_ok else COLORS["RED"]
+        overall_text = "PASS" if ops_ok else "FAIL"
 
         ops_color = COLORS["GREEN"] if ops_comp in ["O(n)", "O(n log n)"] else COLORS["YELLOW"] if ops_comp in ["O(n sqrt(n))", "O(n^2)"] else COLORS["RED"]
         time_color = COLORS["GREEN"] if time_comp in ["O(n)", "O(n log n)"] else COLORS["YELLOW"] if time_comp in ["O(n sqrt(n))", "O(n^2)"] else COLORS["RED"]
@@ -716,7 +748,7 @@ def run_bigo_analysis(executable):
         line += cell(ops_comp, ops_color, 12) + " | "
         line += cell("OK" if ops_ok else "FAIL", ops_status_color, 10) + " | "
         line += cell(time_comp, time_color, 12) + " | "
-        line += cell("OK" if time_ok else "FAIL", time_status_color, 11) + " | "
+        line += cell("info", COLORS["CYAN"], 11) + " | "
         line += cell(overall_text, overall_color, 8) + " | "
         line += f"{expected_desc:<25}"
         print(line)
@@ -730,14 +762,15 @@ def run_bigo_analysis(executable):
         print(f"           | Time: {r['time_details']}")
     print()
 
-    # Expected classification reference
-    print(f"{COLORS['BOLD']}Reference (Operations & Time):{COLORS['RESET']}")
+    # Expected classification reference (operation count — the subject's metric)
+    print(f"{COLORS['BOLD']}Reference (operation-count complexity — the subject's metric):{COLORS['RESET']}")
     print(f"  Simple  : Expected <= O(n^2)  (nearly sorted)")
     print(f"  Medium  : Expected <= O(n sqrt(n))")
     print(f"  Complex : Expected O(n log n) (optimal comparison sort)")
     print(f"  Adaptive: Expected O(n^2) down to O(n log n) (should adapt to disorder)")
     print()
-    print(f"{COLORS['BOLD']}Note:{COLORS['RESET']} Overall PASS requires both Ops and Time to meet expectations.")
+    print(f"{COLORS['BOLD']}Note:{COLORS['RESET']} Overall reflects OPERATIONS only — the subject's metric. "
+          f"Time is shown for reference and is NOT part of the subject's complexity model.")
 
     if all_failures:
         print(f"{COLORS['RED']}Failures detected during Big-O analysis:{COLORS['RESET']}")
@@ -747,14 +780,14 @@ def run_bigo_analysis(executable):
             print(f"  ... and {len(all_failures) - 10} more failures")
         print()
 
+    if any("Timeout" in str(f.get("reason", "")) for f in all_failures):
+        print_timeout_suggestion()
+
     return all_results
 
 # ==========================================
 # BASIC & EDGE-CASE TESTS
 # ==========================================
-INT_MAX = 2147483647
-INT_MIN = -2147483648
-
 BASIC_MODES = ["simple", "medium", "complex", "adaptive"]
 
 # (good, pass) operation-count thresholds for small N (42 small sorts).
@@ -792,7 +825,7 @@ def _disorder_pct(nums):
     return inv / (n * (n - 1) / 2.0) * 100.0
 
 
-def _run_ps(executable, str_args, mode=None, timeout=10):
+def _run_ps(executable, str_args, mode=None, timeout=5):
     """Run push_swap with an optional --mode flag. Returns CompletedProcess or None on timeout."""
     cmd = [executable]
     if mode:
@@ -804,8 +837,10 @@ def _run_ps(executable, str_args, mode=None, timeout=10):
         return None
 
 
-def _exec_and_check(executable, seq, mode=None, timeout=10):
+def _exec_and_check(executable, seq, mode=None, timeout=None):
     """Run push_swap on a VALID integer sequence and analyse the result."""
+    if timeout is None:
+        timeout = compute_timeout(len(seq))
     res = _run_ps(executable, [str(x) for x in seq], mode, timeout)
     if res is None:
         return {"timeout": True, "errored": False, "ops": [], "op_count": 0,
@@ -893,7 +928,7 @@ def test_reversed(executable):
     for n in [3, 5, 10, 50, 100, 500]:
         seq = list(range(n, 0, -1))  # n, n-1, ..., 1  -> fully inverse
         for mode in BASIC_MODES:
-            r = _exec_and_check(executable, seq, mode, timeout=20)
+            r = _exec_and_check(executable, seq, mode)
             grade, color = _grade_any(n, r["op_count"])
             sort_ok = (not r["timeout"]) and r["is_sorted"]
             if not sort_ok or grade == "FAIL":
@@ -918,7 +953,7 @@ def test_sorted(executable):
     for n in [1, 2, 3, 5, 10, 50, 100, 500]:
         seq = list(range(1, n + 1))
         for mode in BASIC_MODES:
-            r = _exec_and_check(executable, seq, mode, timeout=20)
+            r = _exec_and_check(executable, seq, mode)
             passed = (not r["timeout"]) and (not r["errored"]) and r["op_count"] == 0 and r["is_sorted"]
             if r["timeout"]:
                 detail = "timeout"
@@ -959,7 +994,7 @@ def test_nearly_sorted(executable):
     for label, seq in cases:
         seq_str = " ".join(str(x) for x in seq)
         for mode in BASIC_MODES:
-            r = _exec_and_check(executable, seq, mode, timeout=20)
+            r = _exec_and_check(executable, seq, mode)
             passed = (not r["timeout"]) and r["is_sorted"]
             if r["timeout"]:
                 detail = "timeout"
@@ -1134,7 +1169,7 @@ def test_mode_specialization(executable):
         for m in cmp_modes:
             tot, cnt = 0, 0
             for seq in seqs:
-                r = _exec_and_check(executable, seq, m, timeout=20)
+                r = _exec_and_check(executable, seq, m)
                 if r["timeout"] or not r["is_sorted"]:
                     continue
                 tot += r["op_count"]
@@ -1254,7 +1289,8 @@ def test_bench(executable):
     # Per mode on reversed input -> strategy must be named, disorder ~100%.
     rev = [5, 4, 3, 2, 1]
     for mode in BASIC_MODES:
-        res = _run_ps(executable, ["--bench", f"--{mode}"] + [str(x) for x in rev], None, timeout=15)
+        res = _run_ps(executable, ["--bench", f"--{mode}"] + [str(x) for x in rev], None,
+                      timeout=compute_timeout(len(rev)))
         if res is None:
             warns += 1
             print("   " + _pad(f"--bench --{mode} (rev)", 27) + "| " + _pad("--", 10) + "| "
@@ -1286,7 +1322,8 @@ def test_bench(executable):
     dis_cases.append([5, 4, 3, 2, 1])      # 100%
     for seq in dis_cases:
         expected = _disorder_pct(seq)
-        res = _run_ps(executable, ["--bench", "--adaptive"] + [str(x) for x in seq], None, timeout=20)
+        res = _run_ps(executable, ["--bench", "--adaptive"] + [str(x) for x in seq], None,
+                      timeout=compute_timeout(len(seq)))
         if res is None:
             ok, got = False, "timeout"
         else:
@@ -1310,14 +1347,18 @@ def test_bench(executable):
     return warns
 
 
-def _run_memcheck(executable, argv, timeout=30):
-    """Crash detection (direct run) + leak/error check (valgrind/leaks)."""
+def _run_memcheck(executable, argv, timeout=30, input_data=None):
+    """Crash detection (direct run) + leak/error check (valgrind/leaks).
+
+    input_data feeds stdin (used by the bonus checker, which reads operations there).
+    """
     r = {"segfault": False, "mem_ok": False, "leaked": 0, "errors": 0,
          "tool": None, "timeout": False}
 
     # 1) Direct run -> reliable crash detection, independent of valgrind.
     try:
-        d = subprocess.run([executable] + argv, capture_output=True, text=True, timeout=10)
+        d = subprocess.run([executable] + argv, input=input_data, capture_output=True,
+                           text=True, timeout=compute_timeout(len(argv)))
         r["segfault"] = (d.returncode == -signal.SIGSEGV) or ("Segmentation fault" in (d.stdout + d.stderr))
     except subprocess.TimeoutExpired:
         r["timeout"] = True
@@ -1331,7 +1372,7 @@ def _run_memcheck(executable, argv, timeout=30):
         return r
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        res = subprocess.run(cmd, input=input_data, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         r["timeout"] = True
         return r
@@ -1461,11 +1502,203 @@ def run_basic_tests(executable):
 
 
 # ==========================================
+# BONUS — CHECKER TESTS
+# ==========================================
+def _checker_verdict(stack, ops):
+    """Expected checker verdict ('OK'/'KO') for a list of VALID ops applied to stack."""
+    is_sorted, _, _ = PushSwapChecker(list(stack)).validate(ops)
+    return "OK" if is_sorted else "KO"
+
+
+def run_bonus_tests(executable, checker):
+    """Test the bonus `checker` program (next to push_swap)."""
+    print(f"\n{COLORS['BOLD']}{'=' * 80}")
+    print(f"  BONUS — CHECKER TESTS")
+    print(f"{'=' * 80}{COLORS['RESET']}")
+    print(f"   checker: {checker}")
+
+    def run_checker(stack, ops, timeout=5):
+        args = [str(x) for x in stack]
+        stdin = ("\n".join(ops) + "\n") if ops else ""
+        try:
+            return subprocess.run([checker] + args, input=stdin, capture_output=True,
+                                  text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None
+
+    fails = 0
+
+    # --- 1) Error management: invalid input -> exactly "Error\n" on fd2 ---
+    print(f"\n{COLORS['BOLD']}>> Error management{COLORS['RESET']}  (must print \"Error\\n\" on fd2)")
+    print("   " + _pad("CASE", 28) + "| " + _pad("RESULT", 9) + "| DETAIL")
+    print("   " + "-" * 60)
+    err_cases = [
+        ('non-numeric arg',          [3, 2, "one", 0],  None),
+        ('duplicate arg',            [1, 2, 2],         None),
+        ('> INT_MAX arg',            [1, INT_MAX + 1],  None),
+        ('empty arg ""',            ["", 1],           None),
+        ('non-existent instruction', [3, 2, 1, 0],      ["rra", "zz"]),
+        ('instruction with spaces',  [3, 2, 1, 0],      [" sa "]),
+    ]
+    for label, stack, ops in err_cases:
+        res = run_checker(stack, ops)
+        if res is None:
+            passed, detail = False, "timeout"
+        else:
+            errored = res.stderr.strip() == "Error"
+            clean = res.stdout.strip() == ""
+            passed = errored and clean
+            if passed:
+                detail = "Error on fd2"
+            elif res.stderr.strip() == "" and res.stdout.strip() == "":
+                detail = "no Error (accepted bad input?)"
+            elif not errored:
+                detail = "fd2 not exactly Error: " + repr(res.stderr.strip()[:28])
+            else:
+                detail = "fd1 not empty: " + repr(res.stdout.strip()[:22])
+        if not passed:
+            fails += 1
+        print("   " + _pad(label, 28) + "| " + _pad(_ok_cell(passed, "PASS", "FAIL"), 9) + "| " + detail)
+
+    res = run_checker([], None)
+    if res is None:
+        passed, detail = False, "timeout"
+    else:
+        passed = res.stdout == "" and res.stderr == ""
+        detail = ("no output (correct)" if passed
+                  else f"displayed: fd1={repr(res.stdout[:15])} fd2={repr(res.stderr[:15])}")
+    if not passed:
+        fails += 1
+    print("   " + _pad("no arguments -> nothing", 28) + "| "
+          + _pad(_ok_cell(passed, "PASS", "FAIL"), 9) + "| " + detail)
+
+    # --- 2) & 3) Verdict tests (KO = doesn't sort, OK = sorts) ---
+    def verdict_section(title, cases, expected):
+        print(f"\n{COLORS['BOLD']}>> {title}{COLORS['RESET']}  (valid ops -> {expected})")
+        print("   " + _pad("STACK", 26) + "| " + _pad("OPS", 6) + "| " + _pad("EXPECT", 7)
+              + "| " + _pad("GOT", 9) + "| RESULT")
+        print("   " + "-" * 60)
+        f = 0
+        for stack, ops in cases:
+            res = run_checker(stack, ops)
+            if res is None:
+                got, ok = "timeout", False
+            else:
+                got = res.stdout.strip() or "(none)"
+                ok = got == expected
+            if not ok:
+                f += 1
+            stack_txt = " ".join(str(x) for x in stack)
+            print("   " + _pad(stack_txt[:25], 26) + "| " + _pad(str(len(ops)), 6) + "| "
+                  + _pad(expected, 7) + "| " + _pad(got, 9) + "| " + _ok_cell(ok, "PASS", "FAIL"))
+        return f
+
+    # KO cases: subject examples + push_swap output deliberately corrupted (+sa).
+    ko_cases = [
+        ([0, 9, 1, 8, 2, 7, 3, 6, 4, 5], ["sa", "pb", "rrr"]),
+        ([3, 2, 1, 0], ["sa", "rra", "pb"]),
+    ]
+    for _ in range(4):
+        stack = random.sample(range(-100, 100), 5)
+        res = _run_ps(executable, [str(x) for x in stack], None)
+        ops = (res.stdout.split() if res else []) + ["sa"]
+        if _checker_verdict(stack, ops) == "KO":
+            ko_cases.append((stack, ops))
+    fails += verdict_section("False tests", ko_cases, "KO")
+
+    # OK cases: subject examples + push_swap output (verified to sort via simulation).
+    ok_cases = [
+        ([0, 1, 2], []),
+        ([0, 9, 1, 8, 2], ["pb", "ra", "pb", "ra", "sa", "ra", "pa", "pa"]),
+        ([3, 2, 1, 0], ["rra", "pb", "sa", "rra", "pa"]),
+    ]
+    for _ in range(4):
+        stack = random.sample(range(-100, 100), 5)
+        res = _run_ps(executable, [str(x) for x in stack], None)
+        ops = res.stdout.split() if res else []
+        if _checker_verdict(stack, ops) == "OK":
+            ok_cases.append((stack, ops))
+    fails += verdict_section("Right tests", ok_cases, "OK")
+
+    # --- 4) Memory & crashes on the checker ---
+    print(f"\n{COLORS['BOLD']}>> Memory & crashes{COLORS['RESET']}")
+    if not (shutil.which("valgrind") or shutil.which("leaks")):
+        print(f"   {COLORS['YELLOW']}Skipped:{COLORS['RESET']} no valgrind/leaks on PATH (crash check still runs).")
+    print("   " + _pad("CASE", 18) + "| " + _pad("TOOL", 9) + "| " + _pad("LEAKED", 14)
+          + "| " + _pad("MEM ERRORS", 12) + "| " + _pad("CRASH", 8) + "| RESULT")
+    print("   " + "-" * 78)
+    na = f"{COLORS['CYAN']}n/a{COLORS['RESET']}"
+    mem_cases = [
+        ("valid + sort ops", ["0", "9", "1", "8", "2"], "pb\nra\npb\nra\nsa\nra\npa\npa\n"),
+        ("error (dup)",       ["1", "2", "2"],           ""),
+        ("no args",           [],                         ""),
+    ]
+    for label, argv, stdin in mem_cases:
+        r = _run_memcheck(checker, argv, input_data=stdin)
+        if r["timeout"]:
+            print("   " + _pad(label, 18) + "| " + _pad(r["tool"] or "--", 9) + "| " + _pad("--", 14)
+                  + "| " + _pad("--", 12) + "| " + _pad("--", 8) + f"| {COLORS['YELLOW']}timeout{COLORS['RESET']}")
+            continue
+        seg, memok, leaked, errors = r["segfault"], r["mem_ok"], r["leaked"], r["errors"]
+        bad = seg or (memok and (leaked > 0 or errors > 0))
+        if bad:
+            fails += 1
+        result = (f"{COLORS['RED']}FAIL{COLORS['RESET']}" if bad
+                  else f"{COLORS['GREEN']}OK{COLORS['RESET']}" if memok
+                  else f"{COLORS['YELLOW']}no crash (leaks n/a){COLORS['RESET']}")
+        leak_cell = _ok_cell(leaked == 0, "0 B", f"{leaked} B") if memok else na
+        err_cell = _ok_cell(errors == 0, "0", str(errors)) if memok else na
+        print("   " + _pad(label, 18) + "| " + _pad(r["tool"] or "--", 9) + "| " + _pad(leak_cell, 14)
+              + "| " + _pad(err_cell, 12) + "| " + _pad(_ok_cell(not seg, "no", "SEGV"), 8) + "| " + result)
+
+    print(f"\n{COLORS['BOLD']}{'=' * 80}")
+    print(f"  BONUS SUMMARY")
+    print(f"{'=' * 80}{COLORS['RESET']}")
+    if fails == 0:
+        print(f"  {COLORS['GREEN']}ALL CHECKER TESTS PASSED{COLORS['RESET']}")
+    else:
+        print(f"  {COLORS['RED']}{fails} CHECKER FAILURE(S){COLORS['RESET']}")
+    return fails
+
+
+# ==========================================
 # MAIN ENTRY
 # ==========================================
+def print_range_banner():
+    """Print the active number-generation range at the top of a run."""
+    lo, hi, label = GEN_RANGE
+    print(f"{COLORS['BOLD']}Number range:{COLORS['RESET']} {COLORS['CYAN']}{label}{COLORS['RESET']} "
+          f"[{lo}, {hi}] {COLORS['YELLOW']}— your push_swap must support these values.{COLORS['RESET']}")
+    print(f"   {COLORS['CYAN']}Range flags:{COLORS['RESET']} default "
+          f"{COLORS['BOLD']}INT_MIN..INT_MAX{COLORS['RESET']}, "
+          f"{COLORS['BOLD']}--1m{COLORS['RESET']} (-1M..1M), {COLORS['BOLD']}--u1m{COLORS['RESET']} (0..1M)")
+    print(f"   {COLORS['CYAN']}Timeouts:{COLORS['RESET']} scaled by input size "
+          f"(~5s small, ~10s @500, ~15s @800).\n")
+
+
+def print_timeout_suggestion():
+    """Hint shown when timeouts occur: try a narrower value range."""
+    _, _, label = GEN_RANGE
+    print(f"\n{COLORS['MAGENTA']}{COLORS['BOLD']}Timeouts detected.{COLORS['RESET']} "
+          f"Some ./push_swap calls exceeded their (size-scaled) time limit.")
+    if label == "INT_MIN..INT_MAX":
+        print(f"   Try a narrower value range to check whether large/negative values are the cause: "
+              f"{COLORS['BOLD']}--1m{COLORS['RESET']} (-1M..1M) or {COLORS['BOLD']}--u1m{COLORS['RESET']} (0..1M).")
+    else:
+        print(f"   Already using a narrowed range ({label}); the algorithm is likely just slow at this size.")
+
+
+def print_reports_suggestion():
+    """Hint shown on failures when --reports was not enabled."""
+    print(f"\n{COLORS['CYAN']}Tip:{COLORS['RESET']} re-run with {COLORS['BOLD']}--reports{COLORS['RESET']} "
+          f"to dump each failing case (input numbers + operations) to files next to your push_swap,")
+    print(f"   so you can replay them in {COLORS['BOLD']}ft_ps_visu{COLORS['RESET']} or the official 42 checker.")
+
+
 def main():
+    global GEN_RANGE
     args = sys.argv[1:]
-    
+
     reports_enabled = False
     if '--reports' in args:
         reports_enabled = True
@@ -1481,12 +1714,28 @@ def main():
         basic_only = True
         args = [a for a in args if a != '--basic']
 
+    bonus = False
+    if '--bonus' in args:
+        bonus = True
+        args = [a for a in args if a != '--bonus']
+
+    range_key = "intmax"
+    if '--1m' in args:
+        range_key = "1m"
+        args = [a for a in args if a != '--1m']
+    if '--u1m' in args:
+        range_key = "u1m"
+        args = [a for a in args if a != '--u1m']
+    GEN_RANGE = NUMBER_RANGES[range_key]
+
     if len(args) < 1 or len(args) > 3:
         print(f"Usage:")
-        print(f"  Full Test Suite : {sys.argv[0]} [--reports] <path_to_push_swap>")
-        print(f"  Specific Test   : {sys.argv[0]} [--reports] <path_to_push_swap> <size> <mode>")
-        print(f"  Basic Tests     : {sys.argv[0]} --basic <path_to_push_swap>")
-        print(f"  Big-O Analysis  : {sys.argv[0]} --big-o <path_to_push_swap>")
+        print(f"  Full Test Suite : {sys.argv[0]} [--reports] [--1m|--u1m] <path_to_push_swap>")
+        print(f"  Specific Test   : {sys.argv[0]} [--reports] [--1m|--u1m] <path_to_push_swap> <size> <mode>")
+        print(f"  Basic Tests     : {sys.argv[0]} --basic [--1m|--u1m] <path_to_push_swap>")
+        print(f"  Big-O Analysis  : {sys.argv[0]} --big-o [--1m|--u1m] <path_to_push_swap>")
+        print(f"  Bonus checker   : add --bonus to any run (needs ./checker next to push_swap)")
+        print(f"  Ranges          : default INT_MIN..INT_MAX, --1m (-1M..1M), --u1m (0..1M)")
         sys.exit(1)
         
     executable = args[0]
@@ -1494,13 +1743,26 @@ def main():
         print(f"Error: '{executable}' not found or not executable.")
         sys.exit(1)
 
+    print_range_banner()
+
+    checker = None
+    if bonus:
+        checker = os.path.join(os.path.dirname(os.path.abspath(executable)), "checker")
+        if not (os.path.isfile(checker) and os.access(checker, os.X_OK)):
+            print(f"{COLORS['RED']}--bonus: 'checker' not found or not executable next to push_swap:{COLORS['RESET']} {checker}")
+            print(f"   Build your bonus checker (e.g. `make bonus`) and place it there. Skipping bonus.\n")
+            checker = None
+
     if bigo_mode:
         run_bigo_analysis(executable)
+        if checker:
+            run_bonus_tests(executable, checker)
         sys.exit(0)
 
     if basic_only:
         fails, _ = run_basic_tests(executable)
-        sys.exit(1 if fails else 0)
+        bonus_fails = run_bonus_tests(executable, checker) if checker else 0
+        sys.exit(1 if (fails or bonus_fails) else 0)
 
     all_failures = []
     all_warnings = []
@@ -1533,7 +1795,12 @@ def main():
         if mode not in MODES:
             print(f"Error: Invalid mode. Choose from {list(MODES.keys())}")
             sys.exit(1)
-            
+
+        if size not in THRESHOLDS:
+            print(f"Error: single-test size must be one of {sorted(THRESHOLDS)} "
+                  f"(small sizes are covered by --basic).")
+            sys.exit(1)
+
         print(f"{COLORS['BOLD']}Running SINGLE TEST SUITE for {executable}{COLORS['RESET']}\n")
         stats, fails, warns = run_test_suite(executable, size, mode, reports_enabled)
         results.append(stats)
@@ -1543,6 +1810,10 @@ def main():
     # Print detailed failures and warnings if any exist
     print_failures(all_failures)
     print_warnings(all_warnings)
+    if any("Timeout" in str(f.get("reason", "")) for f in all_failures):
+        print_timeout_suggestion()
+    if all_failures and not reports_enabled:
+        print_reports_suggestion()
 
     # Print global summary
     print("\n" + "="*96)
@@ -1566,8 +1837,11 @@ def main():
         warn_str = f"{COLORS['YELLOW']}{r['warnings']}{COLORS['RESET']}" if r['warnings'] > 0 else f"{COLORS['GREEN']}0{COLORS['RESET']}"
         
         print(f"{r['size']:<6} | {r['mode'].upper():<8} | {col_max} | {col_min} | {col_avg} | {fail_str:<6} | {warn_str}")
-        
+
     print("="*96)
+
+    if checker:
+        run_bonus_tests(executable, checker)
 
 
 if __name__ == "__main__":
